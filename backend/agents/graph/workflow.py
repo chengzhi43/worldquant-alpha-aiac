@@ -1,0 +1,374 @@
+"""
+LangGraph Mining Workflow
+Orchestrates the complete alpha mining state graph
+"""
+
+from typing import Dict, List, Optional, Any, Annotated
+from functools import partial
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
+
+from backend.agents.graph.state import MiningState, AlphaResult, FailureRecord
+from backend.agents.graph.nodes import (
+    node_rag_query,
+    node_hypothesis,
+    node_code_gen,
+    node_validate,
+    node_self_correct,
+    node_simulate,
+    node_evaluate,
+    node_save_alpha,
+    node_record_failure
+)
+from backend.agents.graph.edges import (
+    route_after_validate,
+    route_after_self_correct,
+    route_after_simulate,
+    route_after_evaluate,
+    route_next_alpha
+)
+from backend.agents.services import LLMService, RAGService, get_llm_service
+from backend.adapters.brain_adapter import BrainAdapter
+from backend.models import MiningTask
+
+
+class MiningWorkflow:
+    """
+    LangGraph-based mining workflow.
+    
+    Features:
+    - Strongly typed state (Pydantic)
+    - Conditional edges for self-correction loops
+    - Full trace recording
+    - Configurable checkpointing
+    """
+    
+    def __init__(
+        self,
+        db: AsyncSession,
+        brain: BrainAdapter = None,
+        llm_service: LLMService = None,
+        checkpointer: Optional[BaseCheckpointSaver] = None
+    ):
+        self.db = db
+        self.brain = brain or BrainAdapter()
+        self.llm_service = llm_service or get_llm_service()
+        self.rag_service = RAGService(db)
+        self.checkpointer = checkpointer
+        
+        self._graph = self._build_graph()
+        
+        logger.info("[MiningWorkflow] Initialized")
+    
+    def _build_graph(self) -> StateGraph:
+        """
+        Build the mining state graph.
+        
+        Graph structure:
+        START → rag_query → hypothesis → code_gen → validate
+                                                      ↓
+                                          ┌──────────┴──────────┐
+                                          ↓                      ↓
+                                    self_correct           simulate
+                                          ↓                      ↓
+                                      validate             evaluate
+                                          ↓                      ↓
+                                   record_failure    ┌──────────┴──────────┐
+                                          ↓          ↓                      ↓
+                                     next_alpha  save_alpha        record_failure
+                                          ↓          ↓                      ↓
+                                    END/loop    next_alpha             next_alpha
+        """
+        # Create graph with state type
+        workflow = StateGraph(MiningState)
+        
+        # =====================================================================
+        # Add Nodes
+        # =====================================================================
+        
+        # RAG query node (bind dependencies)
+        workflow.add_node(
+            "rag_query",
+            partial(node_rag_query, rag_service=self.rag_service)
+        )
+        
+        # Hypothesis node
+        workflow.add_node(
+            "hypothesis",
+            partial(node_hypothesis, llm_service=self.llm_service)
+        )
+        
+        # Code generation node
+        workflow.add_node(
+            "code_gen",
+            partial(node_code_gen, llm_service=self.llm_service)
+        )
+        
+        # Validation node (no external deps)
+        workflow.add_node("validate", node_validate)
+        
+        # Self-correction node
+        workflow.add_node(
+            "self_correct",
+            partial(node_self_correct, llm_service=self.llm_service)
+        )
+        
+        # Simulation node
+        workflow.add_node(
+            "simulate",
+            partial(node_simulate, brain=self.brain)
+        )
+        
+        # Evaluation node (no external deps)
+        workflow.add_node("evaluate", node_evaluate)
+        
+        # Save alpha node (no external deps)
+        workflow.add_node("save_alpha", node_save_alpha)
+        
+        # Record failure node (no external deps)
+        workflow.add_node("record_failure", node_record_failure)
+        
+        # =====================================================================
+        # Add Edges
+        # =====================================================================
+        
+        # Linear flow: START → rag_query → hypothesis → code_gen → validate
+        workflow.set_entry_point("rag_query")
+        workflow.add_edge("rag_query", "hypothesis")
+        workflow.add_edge("hypothesis", "code_gen")
+        workflow.add_edge("code_gen", "validate")
+        
+        # After validate: conditional routing
+        workflow.add_conditional_edges(
+            "validate",
+            route_after_validate,
+            {
+                "simulate": "simulate",
+                "self_correct": "self_correct",
+                "record_failure": "record_failure"
+            }
+        )
+        
+        # After self-correct: back to validate or give up
+        workflow.add_conditional_edges(
+            "self_correct",
+            route_after_self_correct,
+            {
+                "validate": "validate",
+                "record_failure": "record_failure"
+            }
+        )
+        
+        # After simulate: evaluate or fail
+        workflow.add_conditional_edges(
+            "simulate",
+            route_after_simulate,
+            {
+                "evaluate": "evaluate",
+                "record_failure": "record_failure"
+            }
+        )
+        
+        # After evaluate: save or reject
+        workflow.add_conditional_edges(
+            "evaluate",
+            route_after_evaluate,
+            {
+                "save_alpha": "save_alpha",
+                "record_failure": "record_failure"
+            }
+        )
+        
+        # After save_alpha: check for more
+        workflow.add_conditional_edges(
+            "save_alpha",
+            route_next_alpha,
+            {
+                "validate": "validate",
+                "end": END
+            }
+        )
+        
+        # After record_failure: check for more
+        workflow.add_conditional_edges(
+            "record_failure",
+            route_next_alpha,
+            {
+                "validate": "validate",
+                "end": END
+            }
+        )
+        
+        return workflow
+    
+    def compile(self):
+        """Compile the graph with optional checkpointer."""
+        return self._graph.compile(checkpointer=self.checkpointer)
+    
+    async def run(
+        self,
+        task: MiningTask,
+        dataset_id: str,
+        fields: List[Dict],
+        operators: List[str],
+        num_alphas: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Execute the mining workflow.
+        
+        Args:
+            task: Mining task instance
+            dataset_id: Dataset to mine
+            fields: Available data fields
+            operators: Available operators
+            num_alphas: Target number of alphas
+            
+        Returns:
+            Dictionary with generated_alphas and failures
+        """
+        logger.info(
+            f"[MiningWorkflow] 开始执行 | "
+            f"task={task.id} dataset={dataset_id} target={num_alphas}"
+        )
+        
+        # Initialize state
+        initial_state = MiningState(
+            task_id=task.id,
+            region=task.region,
+            universe=task.universe,
+            dataset_id=dataset_id,
+            fields=fields,
+            operators=operators,
+            num_alphas_target=num_alphas
+        )
+        
+        # Compile and run
+        app = self.compile()
+        
+        # Execute graph
+        final_state = None
+        async for state in app.astream(initial_state):
+            # Each yield is a partial state update
+            final_state = state
+            
+            # Log progress
+            if isinstance(state, dict):
+                for node_name in state:
+                    if node_name != "__end__":
+                        logger.debug(f"[MiningWorkflow] 节点完成 | {node_name}")
+        
+        # Extract final state
+        if final_state and isinstance(final_state, dict):
+            # Get the terminal state
+            for key in final_state:
+                if hasattr(final_state[key], 'generated_alphas'):
+                    final_state = final_state[key]
+                    break
+        
+        # Get results
+        generated_alphas = []
+        failures = []
+        
+        if hasattr(final_state, 'generated_alphas'):
+            generated_alphas = final_state.generated_alphas
+        elif isinstance(final_state, dict):
+            generated_alphas = final_state.get('generated_alphas', [])
+        
+        if hasattr(final_state, 'failures'):
+            failures = final_state.failures
+        elif isinstance(final_state, dict):
+            failures = final_state.get('failures', [])
+        
+        logger.info(
+            f"[MiningWorkflow] 执行完成 | "
+            f"success={len(generated_alphas)} failed={len(failures)}"
+        )
+        
+        return {
+            "generated_alphas": generated_alphas,
+            "failures": failures,
+            "trace_steps": final_state.trace_steps if hasattr(final_state, 'trace_steps') else []
+        }
+    
+    async def run_with_persistence(
+        self,
+        task: MiningTask,
+        dataset_id: str,
+        fields: List[Dict],
+        operators: List[str],
+        num_alphas: int = 3
+    ):
+        """
+        Execute workflow and persist results to database.
+        """
+        from backend.models import Alpha, AlphaFailure, TraceStep
+        
+        result = await self.run(task, dataset_id, fields, operators, num_alphas)
+        
+        # Persist alphas
+        for alpha_result in result.get("generated_alphas", []):
+            alpha = Alpha(
+                task_id=task.id,
+                alpha_id=alpha_result.alpha_id,
+                expression=alpha_result.expression,
+                hypothesis=alpha_result.hypothesis,
+                logic_explanation=alpha_result.explanation,
+                region=task.region,
+                universe=task.universe,
+                dataset_id=dataset_id,
+                simulation_status="SUCCESS",
+                quality_status=alpha_result.quality_status,
+                metrics=alpha_result.metrics
+            )
+            self.db.add(alpha)
+        
+        # Persist failures
+        for failure in result.get("failures", []):
+            fail_record = AlphaFailure(
+                task_id=task.id,
+                expression=failure.expression,
+                error_type=failure.error_type,
+                error_message=failure.error_message
+            )
+            self.db.add(fail_record)
+        
+        # Persist trace steps
+        for trace in result.get("trace_steps", []):
+            step = TraceStep(
+                task_id=task.id,
+                step_type=trace.step_type,
+                step_order=trace.step_order,
+                input_data=trace.input_data,
+                output_data=trace.output_data,
+                duration_ms=trace.duration_ms,
+                status=trace.status,
+                error_message=trace.error_message
+            )
+            self.db.add(step)
+        
+        await self.db.commit()
+        
+        logger.info(f"[MiningWorkflow] 持久化完成 | task={task.id}")
+        
+        return result
+
+
+def create_mining_graph(
+    db: AsyncSession,
+    brain: BrainAdapter = None,
+    llm_service: LLMService = None
+) -> MiningWorkflow:
+    """
+    Factory function to create mining workflow.
+    
+    Usage:
+        workflow = create_mining_graph(db, brain)
+        result = await workflow.run(task, dataset_id, fields, operators)
+    """
+    return MiningWorkflow(
+        db=db,
+        brain=brain,
+        llm_service=llm_service
+    )

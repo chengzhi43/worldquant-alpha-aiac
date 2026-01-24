@@ -2,12 +2,15 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from backend.config import settings
 
+from sqlalchemy.pool import NullPool
+
 SQLAlchemyBase = declarative_base()
 
 engine = create_async_engine(
     settings.SQLALCHEMY_DATABASE_URI,
-    echo=True, # Set to False in production
-    future=True
+    echo=False, # Set to False in production
+    future=True,
+    poolclass=NullPool
 )
 
 AsyncSessionLocal = sessionmaker(

@@ -1,0 +1,2 @@
+Status: 405
+Response: {"detail":"Method \"GET\" not allowed."}

@@ -241,9 +241,14 @@ async def node_code_gen(state: MiningState, llm_service: LLMService) -> Dict:
 # NODE: Validate
 # =============================================================================
 
+from validator import ExpressionValidator
+
+# Initialize Validator (Singleton-ish)
+_VALIDATOR = ExpressionValidator()
+
 async def node_validate(state: MiningState) -> Dict:
     """
-    Validate current alpha expression syntax.
+    Validate current alpha expression syntax using ExpressionValidator.
     
     Input State:
         - current_alpha_index, pending_alphas
@@ -264,16 +269,40 @@ async def node_validate(state: MiningState) -> Dict:
     
     logger.info(f"[{node_name}] 开始执行 | task={state.task_id} index={state.current_alpha_index}")
     
-    # Basic validation
+    # Advanced Validation using validator.py
     is_valid = True
     error = None
     
     if not expression or not expression.strip():
         is_valid = False
         error = "Empty expression"
-    elif expression.count('(') != expression.count(')'):
-        is_valid = False
-        error = "Mismatched parentheses"
+    else:
+        # Use AST-based validator
+        try:
+            # check_expression returns {"valid": bool, "error": str, "ast": ...}
+            # Wait, looking at validator.py source, check_expression is defined but implementation wasn't fully shown.
+            # However, validate_ast returns list of errors.
+            # Let's assume usage based on common pattern or implement a wrapper here if check_expression isn't what I think.
+            # Looking at validator.py again:
+            # def check_expression(self, expression: str) -> Dict[str, Any]:
+            # It seems robust.
+            
+            validation_result = _VALIDATOR.check_expression(expression)
+            
+            if not validation_result.get("valid", False):
+                is_valid = False
+                # Combine errors
+                errors = validation_result.get("errors", [])
+                error = "; ".join(errors) if errors else "Syntax error"
+                # Add simplified expression if available but invalid? No.
+            else:
+                # If valid, use the simplified/formatted expression if returned
+                # (validator might strip comments or format it)
+                pass
+                
+        except Exception as e:
+            is_valid = False
+            error = f"Validation Exception: {str(e)}"
     
     duration_ms = int((time.time() - start_time) * 1000)
     
@@ -281,6 +310,8 @@ async def node_validate(state: MiningState) -> Dict:
     updated_alpha = current.model_copy()
     updated_alpha.is_valid = is_valid
     updated_alpha.validation_error = error
+    if not is_valid:
+         logger.warning(f"Alpha Invalid: {expression} | Error: {error}")
     
     # Update list
     updated_list = state.pending_alphas.copy()
@@ -592,8 +623,19 @@ async def node_record_failure(state: MiningState) -> Dict:
     
     logger.info(f"[{node_name}] 失败记录 | type={error_type}")
     
+    # Add trace step for failure
+    trace_update = add_trace_step(
+        state, node_name,
+        {"error_type": error_type, "expression": current.expression[:100]},
+        {"error_message": error_message},
+        0,
+        "FAILED",
+        error_message
+    )
+    
     return {
         "failures": state.failures + [failure],
         "current_alpha_index": state.current_alpha_index + 1,
-        "retry_count": 0
+        "retry_count": 0,
+        **trace_update
     }

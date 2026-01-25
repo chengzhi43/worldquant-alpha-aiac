@@ -264,9 +264,11 @@ async def start_task(task_id: int, db: AsyncSession = Depends(get_db)):
     )
     await db.commit()
     
-    # TODO: Trigger actual mining via Celery or background task
+    # Trigger actual mining via Celery
+    from backend.tasks import run_mining_task
+    celery_task = run_mining_task.delay(task_id)
     
-    return {"message": "Task started", "task_id": task_id}
+    return {"message": "Task started", "task_id": task_id, "celery_task_id": celery_task.id}
 
 
 @router.post("/{task_id}/intervene")

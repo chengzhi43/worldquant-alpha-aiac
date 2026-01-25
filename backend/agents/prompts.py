@@ -24,41 +24,62 @@ ALPHA_GENERATION_SYSTEM = """你是一位世界级的量化研究员，专门从
 """
 
 ALPHA_GENERATION_USER = """## 挖掘任务
-
-**区域**: {region}
-**股票池**: {universe}
-**数据集**: {dataset_id}
-**描述**: {dataset_description}
-
-## 可用字段
-{fields_json}
-
-## 可用算子
-{operators_json}
-
-## 成功模式参考 (Few-shot)
-{few_shot_examples}
-
-## 避坑指南 (Negative Constraints)
-{negative_constraints}
-
-## 任务
-请生成 {num_alphas} 个高质量 Alpha 表达式。
-
-输出 JSON 格式:
-```json
-{{
-  "alphas": [
-    {{
-      "expression": "your_alpha_expression",
-      "hypothesis": "投资假设",
-      "explanation": "逻辑解释",
-      "expected_sharpe": 1.5
-    }}
-  ]
-}}
-```
-"""
+ 
+ **区域**: {region}
+ **股票池**: {universe}
+ **数据集**: {dataset_id}
+ **描述**: {dataset_description}
+ 
+ ## 可用字段
+ {fields_json}
+ 
+ ## 可用算子
+ {operators_json}
+ 
+ ## 成功模式参考 (Few-shot/Alpha-GPT)
+ {few_shot_examples}
+ 
+ ## 避坑指南 (Negative Constraints & Syntax Rules)
+ {negative_constraints}
+ 
+ ### CRITICAL SYNTAX RULES (Violation = Compilation Failure):
+ 1. **Lookback Windows MUST be Integers**: Use `20`, `60`, NOT `20.0` or `0`.
+    - Correct: `ts_mean(close, 20)`
+    - Incorrect: `ts_mean(close, 20.0)`
+ 
+ 2. **Keyword Arguments are MANDATORY for certain parameters**:
+    - `ts_regression(y, x, d, lag=0, rettype=0)`
+    - `winsorize(x, std=4)` 
+    - `ts_rank(x, d, constant=0)`
+    - `hump(x, hump=0.01)`
+    - `ts_quantile(x, d, driver="gaussian")`
+ 
+ 3. **Operator Specifics**:
+    - `scale(x)`: Exactly 1 input.
+    - `power(x, n)`: Use `power`, NOT `pow`.
+    - `group_neutralize(x, sector)`: Group name (sector/industry) is NOT quoted.
+    - `inverse(x)`: Exactly 1 input (1/x).
+ 
+ 4. **Logic**:
+    - Avoid look-ahead bias (do not use `ts_step(-1)` or negative delays).
+ 
+ ## 任务
+ 请生成 {num_alphas} 个高质量 Alpha 表达式。
+ 
+ 输出 JSON 格式:
+ ```json
+ {{
+   "alphas": [
+     {{
+       "expression": "rank(ts_delta(close, 5))",
+       "hypothesis": "Short-term momentum reversal...",
+       "explanation": "Ranking the 5-day price change...",
+       "expected_sharpe": 1.5
+     }}
+   ]
+ }}
+ ```
+ """
 
 # =============================================================================
 # HYPOTHESIS GENERATION

@@ -247,25 +247,12 @@ class MiningWorkflow:
         # Compile and run
         app = self.compile()
         
-        # Execute graph
-        final_state = None
-        async for state in app.astream(initial_state):
-            # Each yield is a partial state update
-            final_state = state
-            
-            # Log progress
-            if isinstance(state, dict):
-                for node_name in state:
-                    if node_name != "__end__":
-                        logger.debug(f"[MiningWorkflow] 节点完成 | {node_name}")
+        # Execute graph (Synchronous-style for full state)
+        # We use invoke to ensure we get the accumulated final state, NOT just partial updates
+        final_state = await app.ainvoke(initial_state)
         
-        # Extract final state
-        if final_state and isinstance(final_state, dict):
-            # Get the terminal state
-            for key in final_state:
-                if hasattr(final_state[key], 'generated_alphas'):
-                    final_state = final_state[key]
-                    break
+        # Log completion
+        logger.info("[MiningWorkflow] Worklfow execution finished")
         
         # Get results
         generated_alphas = []

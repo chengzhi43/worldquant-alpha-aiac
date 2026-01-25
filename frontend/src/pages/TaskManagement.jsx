@@ -29,8 +29,36 @@ import api from '../services/api'
 const { Title } = Typography
 const { Option } = Select
 
+
+// Region to Universe mapping
+const REGION_UNIVERSE_MAP = {
+  USA: ['TOP3000', 'TOP1000', 'TOP500', 'TOP200', 'TOPSP500'],
+  GLB: ['TOP3000', 'MINVOL1M', 'TOPDIV3000'],
+  EUR: ['TOP1200'],
+  ASI: ['MINVOL1M'],
+  CHN: ['TOP2000U'],
+  KOR: ['TOP600'],
+  HKG: ['TOP500'],
+  IND: ['TOP500'],
+}
+
+// Region names for display
+const REGION_NAMES = {
+  USA: 'USA (United States)',
+  GLB: 'GLB (Global)',
+  EUR: 'EUR (Europe)',
+  ASI: 'ASI (Asia)',
+  CHN: 'CHN (China)',
+  KOR: 'KOR (South Korea)',
+  HKG: 'HKG (Hong Kong)',
+  IND: 'IND (India)',
+}
+
 export default function TaskManagement() {
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [datasetStrategy, setDatasetStrategy] = useState('AUTO')
+  const [selectedRegion, setSelectedRegion] = useState('USA')
+  
   const [form] = Form.useForm()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -50,6 +78,8 @@ export default function TaskManagement() {
       queryClient.invalidateQueries(['tasks'])
       setIsModalOpen(false)
       form.resetFields()
+      setDatasetStrategy('AUTO')
+      setSelectedRegion('USA')
     },
     onError: () => {
       message.error('任务创建失败')
@@ -66,7 +96,21 @@ export default function TaskManagement() {
   })
 
   const handleCreateTask = (values) => {
-    createTaskMutation.mutate(values)
+    // Format target_datasets as a list if it exists
+    const payload = { ...values }
+    if (payload.dataset_strategy === 'SPECIFIC' && payload.target_dataset_id) {
+      payload.target_datasets = [payload.target_dataset_id]
+      delete payload.target_dataset_id
+    }
+    createTaskMutation.mutate(payload)
+  }
+
+  // Handle region change to update universe options
+  const handleRegionChange = (value) => {
+    setSelectedRegion(value)
+    // Default to strict top universe or first available
+    const universes = REGION_UNIVERSE_MAP[value] || []
+    form.setFieldsValue({ universe: universes[0] })
   }
 
   const columns = [
@@ -231,20 +275,19 @@ export default function TaskManagement() {
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item name="region" label="地区">
-                <Select>
-                  <Option value="USA">USA</Option>
-                  <Option value="CHN">中国 (China)</Option>
-                  <Option value="ASI">亚洲 (Asia)</Option>
-                  <Option value="EUR">欧洲 (Europe)</Option>
+                <Select onChange={handleRegionChange}>
+                  {Object.entries(REGION_NAMES).map(([key, name]) => (
+                    <Option key={key} value={key}>{name}</Option>
+                  ))}
                 </Select>
               </Form.Item>
             </Col>
             <Col span={12}>
               <Form.Item name="universe" label="股票池">
                 <Select>
-                  <Option value="TOP3000">TOP3000</Option>
-                  <Option value="TOP500">TOP500</Option>
-                  <Option value="TOP1000">TOP1000</Option>
+                  {(REGION_UNIVERSE_MAP[selectedRegion] || []).map(u => (
+                    <Option key={u} value={u}>{u}</Option>
+                  ))}
                 </Select>
               </Form.Item>
             </Col>
@@ -253,7 +296,7 @@ export default function TaskManagement() {
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item name="dataset_strategy" label="数据集策略">
-                <Select>
+                <Select onChange={(val) => setDatasetStrategy(val)}>
                   <Option value="AUTO">自动探索 (Hierarchical RAG)</Option>
                   <Option value="SPECIFIC">指定数据集</Option>
                 </Select>
@@ -268,6 +311,17 @@ export default function TaskManagement() {
               </Form.Item>
             </Col>
           </Row>
+
+          {datasetStrategy === 'SPECIFIC' && (
+            <Form.Item
+              name="target_dataset_id"
+              label="数据集 ID"
+              rules={[{ required: true, message: '请输入数据集 ID' }]}
+              help="请输入 BRAIN 平台的数据集 ID (例如: analyst10, news4)"
+            >
+              <Input placeholder="输入 dataset_id" />
+            </Form.Item>
+          )}
 
           <Form.Item name="daily_goal" label="每日目标 (Alpha 数量)">
             <InputNumber min={1} max={20} style={{ width: '100%' }} />

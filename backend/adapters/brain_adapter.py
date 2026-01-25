@@ -205,14 +205,15 @@ class BrainAdapter:
     # ... Methods (simulate_alpha, get_datasets, etc.) need to use self.client ...
     # I will replicate them below, ensuring they use self.client and handle errors.
     
-    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P0Y0M") -> Dict:
+    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M") -> Dict:
         # Construct payload
         sim_payload = {
             "type": "REGULAR",
             "settings": {
                 "instrumentType": "EQUITY", "region": region, "universe": universe, "delay": delay,
                 "decay": decay, "neutralization": neutralization, "truncation": truncation,
-                "testPeriod": test_period, "nanHandling": "OFF", "unitHandling": "VERIFY", "pasteurization": "ON"
+                "testPeriod": test_period, "nanHandling": "OFF", "unitHandling": "VERIFY", "pasteurization": "ON",
+                "language": "FASTEXPR", "visualization": False
             },
             "regular": expression
         }
@@ -220,6 +221,7 @@ class BrainAdapter:
         try:
             response = await self.client.post(f"{self.BASE_URL}/simulations", json=sim_payload)
             if response.status_code not in [200, 201, 202]:
+                logger.error(f"Brain Simulation Failed [{response.status_code}] | Payload: {json.dumps(sim_payload)} | Response: {response.text}")
                 return {"success": False, "error": f"Creation failed: {response.text}"}
             
             location = response.headers.get("Location")
@@ -231,43 +233,192 @@ class BrainAdapter:
             logger.error(f"Simulate error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _wait_for_simulation(self, location: str, max_wait: int = 300) -> Dict:
+    async def simulate_batch(self, expressions: List[str], region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M") -> List[Dict]:
+        """
+        Simulate multiple alphas in a single batch request (Multi-Simulation).
+        Returns a list of results in the same order as expressions.
+        """
+        # Construct payload list
+        sim_payloads = []
+        for expr in expressions:
+            sim_payloads.append({
+                "type": "REGULAR",
+                "settings": {
+                    "instrumentType": "EQUITY", "region": region, "universe": universe, "delay": delay,
+                    "decay": decay, "neutralization": neutralization, "truncation": truncation,
+                    "testPeriod": test_period, "nanHandling": "OFF", "unitHandling": "VERIFY", "pasteurization": "ON",
+                    "language": "FASTEXPR", "visualization": False
+                },
+                "regular": expr
+            })
+        
+        try:
+            # POST list of configs
+            response = await self.client.post(f"{self.BASE_URL}/simulations", json=sim_payloads)
+            
+            if response.status_code not in [200, 201, 202]:
+                logger.error(f"Batch Simulation Failed [{response.status_code}] | Response: {response.text}")
+                # Return failures for all
+                return [{"success": False, "error": f"Batch creation failed: {response.text}"} for _ in expressions]
+            
+            location = response.headers.get("Location")
+            if not location:
+                # If no location header, check body (unlikely for multi-sim)
+                return [{"success": False, "error": "No location header"} for _ in expressions]
+                 
+            # Wait for parent simulation
+            parent_result = await self._wait_for_multisim(location)
+            
+            if not parent_result["success"]:
+                return [{"success": False, "error": parent_result.get("error")} for _ in expressions]
+            
+            # Map results back to order is tricky if Brain doesn't guarantee order, 
+            # but usually 'children' list order might allow correlation if we trust it?
+            # Better: match by alpha ID if possible? 
+            # Actually ace_lib iterates children and fetches results.
+            
+            return parent_result["results"]
+            
+        except Exception as e:
+            logger.error(f"Batch Simulate error: {e}")
+            return [{"success": False, "error": str(e)} for _ in expressions]
+
+    async def _wait_for_multisim(self, location: str, max_wait: int = 600) -> Dict:
+        """Poll for multi-simulation completion."""
+        # Determine full URL
+        if location.startswith("http"):
+            poll_url = location
+        else:
+            poll_url = f"{self.BASE_URL}{location}"
+            
         start_time = datetime.now()
         while (datetime.now() - start_time).seconds < max_wait:
             try:
-                 response = await self.client.get(f"{self.BASE_URL}{location}")
-                 if response.headers.get("Retry-After"):
-                     await asyncio.sleep(float(response.headers["Retry-After"]))
-                     continue
-                     
-                 if response.status_code != 200:
-                     await asyncio.sleep(3)
-                     continue
-                     
-                 data = response.json()
-                 status = data.get("status", "")
-                 
-                 if status == "DONE":
-                     alpha = data.get("alpha", {})
-                     return {
-                         "success": True, 
-                         "alpha_id": alpha.get("id"),
-                         "metrics": {
-                             "sharpe": alpha.get("is", {}).get("sharpe"),
-                             "returns": alpha.get("is", {}).get("returns"),
-                             "turnover": alpha.get("is", {}).get("turnover"),
-                             "fitness": alpha.get("is", {}).get("fitness"),
-                             "max_dd": alpha.get("is", {}).get("drawdown")
-                         }
-                     }
-                 elif status == "ERROR":
-                     return {"success": False, "error": data.get("message")}
-                 
-                 await asyncio.sleep(2)
+                logger.debug(f"Polling multi-sim: {poll_url}")
+                response = await self.client.get(poll_url)
+                
+                if response.headers.get("Retry-After"):
+                    await asyncio.sleep(float(response.headers["Retry-After"]))
+                    continue
+
+                if response.status_code != 200:
+                    logger.warning(f"Batch poll non-200: {response.status_code}")
+                    await asyncio.sleep(5)
+                    continue
+
+                data = response.json()
+                status = data.get("status", "")
+                
+                if status == "DONE":
+                    children_ids = data.get("children", [])
+                    results = []
+                    
+                    # Fetch details for each child
+                    for child_id in children_ids:
+                         # Fetch child sim status to get alpha ID
+                         child_url = f"{self.BASE_URL}/simulations/{child_id}"
+                         child_resp = await self.client.get(child_url)
+                         if child_resp.status_code == 200:
+                             child_data = child_resp.json()
+                             alpha_data = child_data.get("alpha")
+                             alpha_id = alpha_data if isinstance(alpha_data, str) else alpha_data.get("id")
+                             
+                             if alpha_id:
+                                 # Fetch full alpha details
+                                 details = await self._get_completed_alpha_details(alpha_id)
+                                 results.append(details)
+                             else:
+                                 results.append({"success": False, "error": "No Alpha ID in child"})
+                         else:
+                             results.append({"success": False, "error": "Failed to fetch child"})
+                    
+                    return {"success": True, "results": results}
+                    
+                elif status == "ERROR":
+                    return {"success": False, "error": data.get("message")}
+                
+                await asyncio.sleep(3)
             except Exception as e:
-                logger.error(f"Polling error: {e}")
-                await asyncio.sleep(2)
+                import traceback
+                logger.error(f"Batch poll error: {traceback.format_exc()}")
+                await asyncio.sleep(3)
+                
         return {"success": False, "error": "Timeout"}
+
+    async def _wait_for_simulation(self, location: str, max_wait: int = 300) -> Dict:
+        # Determine full URL
+        if location.startswith("http"):
+            poll_url = location
+        else:
+            poll_url = f"{self.BASE_URL}{location}"
+            
+        start_time = datetime.now()
+        while (datetime.now() - start_time).seconds < max_wait:
+            try:
+                logger.debug(f"Polling simulation status: {poll_url}")
+                response = await self.client.get(poll_url)
+                
+                # Check outcome FIRST, ignore Retry-After if done
+                if response.status_code == 200:
+                    data = response.json()
+                    status = data.get("status", "")
+                    
+                    if status == "DONE":
+                        alpha_id = data.get("alpha")
+                        # 2-step: fetch result details
+                        if alpha_id:
+                            return await self._get_completed_alpha_details(alpha_id)
+                        return {"success": False, "error": "No Alpha ID returned"}
+                        
+                    elif status == "ERROR":
+                        return {"success": False, "error": data.get("message")}
+                
+                # If running, check rate limit/retry
+                if response.headers.get("Retry-After"):
+                    retry_after = float(response.headers["Retry-After"])
+                    logger.debug(f"Simulation pending... sleeping {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    continue
+
+                if response.status_code != 200:
+                    logger.warning(f"Poll warning: {response.status_code} {response.text}")
+                    await asyncio.sleep(5)
+                    continue
+                
+                # Pending but no Retry-After?
+                await asyncio.sleep(3)
+
+            except Exception as e:
+                logger.error(f"Poll loop error: {e}")
+                await asyncio.sleep(3)
+                
+        return {"success": False, "error": "Timeout"}
+
+    async def _get_completed_alpha_details(self, alpha_id: str) -> Dict:
+        """Fetch full details for a completed alpha."""
+        try:
+            url = f"{self.BASE_URL}/alphas/{alpha_id}"
+            response = await self.client.get(url)
+            
+            if response.status_code != 200:
+                logger.error(f"Failed to get alpha details: {response.text}")
+                return {"success": False, "error": "Failed to fetch details"}
+                
+            alpha = response.json()
+            return {
+                 "success": True, 
+                 "alpha_id": alpha.get("id"),
+                 "metrics": {
+                     "sharpe": alpha.get("is", {}).get("sharpe"),
+                     "returns": alpha.get("is", {}).get("returns"),
+                     "turnover": alpha.get("is", {}).get("turnover"),
+                     "fitness": alpha.get("is", {}).get("fitness"),
+                     "max_dd": alpha.get("is", {}).get("drawdown")
+                 }
+             }
+        except Exception as e:
+            logger.error(f"Get alpha details error: {e}")
+            return {"success": False, "error": str(e)}
 
     async def _safe_api_call(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
         """

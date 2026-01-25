@@ -8,7 +8,7 @@ from backend.celery_app import celery_app
 from backend.database import AsyncSessionLocal
 from backend.agents import MiningAgent, FeedbackAgent
 from backend.adapters.brain_adapter import BrainAdapter
-from backend.models import MiningTask, DatasetMetadata, Operator
+from backend.models import MiningTask, DatasetMetadata, Operator, DataField
 from sqlalchemy import select, update, func
 from loguru import logger
 
@@ -54,20 +54,33 @@ def run_mining_task(self, task_id: int):
                 async with BrainAdapter() as brain:
                     mining_agent = MiningAgent(db, brain)
                     
-                    # Get datasets to mine
+                    # Get datasets to mine (LOCAL DB)
                     if task.dataset_strategy == "SPECIFIC" and task.target_datasets:
                         datasets = task.target_datasets
                     else:
-                        # Auto-explore: get top datasets by weight
+                        # Auto-explore: get top datasets by weight from LOCAL DB
                         ds_query = select(DatasetMetadata).where(
-                            DatasetMetadata.region == task.region
+                            DatasetMetadata.region == task.region,
+                            DatasetMetadata.universe == task.universe
                         ).order_by(DatasetMetadata.mining_weight.desc()).limit(10)
                         ds_result = await db.execute(ds_query)
-                        datasets = [d.dataset_id for d in ds_result.scalars().all()]
+                        datasets_objs = ds_result.scalars().all()
+                        datasets = [d.dataset_id for d in datasets_objs]
                     
                     if not datasets:
-                        datasets = await brain.get_datasets(region=task.region)
-                        datasets = [d["id"] for d in datasets[:10]]
+                        logger.warning(f"No datasets found for mining in {task.region}/{task.universe}")
+                        return {"warning": "No datasets found"}
+
+                    # Get operators from LOCAL DB
+                    op_query = select(Operator).where(Operator.is_active == True)
+                    op_result = await db.execute(op_query)
+                    # Convert to list of strings (names) as expected by MiningAgent
+                    operators = [op.name for op in op_result.scalars().all()]
+                    
+                    if not operators:
+                        # Fallback if DB is empty
+                        logger.warning("No operators found in DB, using basic set")
+                        operators = ["ts_rank", "ts_mean", "ts_std_dev", "ts_corr", "ts_product", "ts_sum"]
                     
                     # Mine each dataset
                     total_alphas = 0
@@ -82,24 +95,52 @@ def run_mining_task(self, task_id: int):
                             logger.info(f"Task {task_id} reached goal")
                             break
                         
-                        # Get fields and operators
-                        fields = await brain.get_datafields(
-                            dataset_id=dataset_id,
-                            region=task.region
+                        # Get fields from LOCAL DB
+                        # 1. Get Dataset PK
+                        ds_meta_stmt = select(DatasetMetadata).where(
+                            DatasetMetadata.dataset_id == dataset_id,
+                            DatasetMetadata.region == task.region,
+                            DatasetMetadata.universe == task.universe
                         )
-                        operators = await brain.get_operators()
+                        ds_meta_res = await db.execute(ds_meta_stmt)
+                        ds_meta = ds_meta_res.scalar_one_or_none()
+                        
+                        fields = []
+                        if ds_meta:
+                            # 2. Get Fields linked to this dataset
+                            fields_stmt = select(DataField).where(
+                                DataField.dataset_id == ds_meta.id
+                            )
+                            fields_res = await db.execute(fields_stmt)
+                            fields_objs = fields_res.scalars().all()
+                            
+                            # Convert to dict format expected by MiningAgent
+                            fields = [
+                                {
+                                    "id": f.field_id,
+                                    "name": f.field_name,
+                                    "description": f.description,
+                                    "type": f.field_type
+                                }
+                                for f in fields_objs
+                            ]
                         
                         if not fields:
+                            logger.warning(f"No fields found for dataset {dataset_id}, skipping")
                             continue
                         
                         # Run mining iteration
-                        alphas = await mining_agent.run_mining_iteration(
-                            task=task,
-                            dataset_id=dataset_id,
-                            fields=fields,
-                            operators=operators,
-                            num_alphas=2
-                        )
+                        try:
+                            alphas = await mining_agent.run_mining_iteration(
+                                task=task,
+                                dataset_id=dataset_id,
+                                fields=fields,
+                                operators=operators,
+                                num_alphas=2
+                            )
+                        except Exception as e:
+                             logger.error(f"Mining iteration failed for {dataset_id}: {e}")
+                             continue
                         
                         # Update progress
                         task.progress_current += len([a for a in alphas if a.quality_status == "PASS"])

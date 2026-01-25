@@ -74,13 +74,27 @@ def run_mining_task(self, task_id: int):
                     # Get operators from LOCAL DB
                     op_query = select(Operator).where(Operator.is_active == True)
                     op_result = await db.execute(op_query)
-                    # Convert to list of strings (names) as expected by MiningAgent
-                    operators = [op.name for op in op_result.scalars().all()]
+                    # Convert to list of dicts (rich metadata) as expected by MiningAgent
+                    operators = []
+                    for op in op_result.scalars().all():
+                        operators.append({
+                            "name": op.name,
+                            "category": op.category,
+                            "description": op.description,
+                            "definition": op.definition
+                        })
                     
                     if not operators:
-                        # Fallback if DB is empty
+                        # Fallback if DB is empty - use basic dicts
                         logger.warning("No operators found in DB, using basic set")
-                        operators = ["ts_rank", "ts_mean", "ts_std_dev", "ts_corr", "ts_product", "ts_sum"]
+                        operators = [
+                            {"name": "ts_rank", "category": "Time Series", "description": "Rank over time", "definition": "ts_rank(x, d)"},
+                            {"name": "ts_mean", "category": "Time Series", "description": "Mean over time", "definition": "ts_mean(x, d)"}, 
+                            {"name": "ts_std_dev", "category": "Time Series", "description": "Std Dev over time", "definition": "ts_std_dev(x, d)"},
+                            {"name": "ts_corr", "category": "Time Series", "description": "Correlation", "definition": "ts_corr(x, y, d)"},
+                            {"name": "ts_product", "category": "Time Series", "description": "Product over time", "definition": "ts_product(x, d)"},
+                            {"name": "ts_sum", "category": "Time Series", "description": "Sum over time", "definition": "ts_sum(x, d)"}
+                        ]
                     
                     # Mine each dataset
                     total_alphas = 0
@@ -136,7 +150,7 @@ def run_mining_task(self, task_id: int):
                                 dataset_id=dataset_id,
                                 fields=fields,
                                 operators=operators,
-                                num_alphas=2
+                                num_alphas=4
                             )
                         except Exception as e:
                              logger.error(f"Mining iteration failed for {dataset_id}: {e}")
@@ -389,6 +403,9 @@ def sync_operators_from_brain():
                     if existing:
                         existing.description = op_data.get("description")
                         existing.category = op_data.get("category")
+                        existing.definition = op_data.get("definition")
+                        existing.level = op_data.get("level")
+                        existing.scope = op_data.get("scope")
                         # existing.param_count = len(op_data.get("parameters", []))
                         updated += 1
                     else:
@@ -396,6 +413,9 @@ def sync_operators_from_brain():
                             name=name,
                             description=op_data.get("description"),
                             category=op_data.get("category"),
+                            definition=op_data.get("definition"),
+                            level=op_data.get("level"),
+                            scope=op_data.get("scope"),
                             # param_count=len(op_data.get("parameters", []))
                         )
                         db.add(new_op)

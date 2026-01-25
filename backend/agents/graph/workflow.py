@@ -13,21 +13,18 @@ from loguru import logger
 from backend.agents.graph.state import MiningState, AlphaResult, FailureRecord
 from backend.agents.graph.nodes import (
     node_rag_query,
+    node_distill_context,
     node_hypothesis,
     node_code_gen,
     node_validate,
     node_self_correct,
     node_simulate,
     node_evaluate,
-    node_save_alpha,
-    node_record_failure
+    node_save_results
 )
 from backend.agents.graph.edges import (
     route_after_validate,
-    route_after_self_correct,
-    route_after_simulate,
-    route_after_evaluate,
-    route_next_alpha
+    route_check_error
 )
 from backend.agents.services import LLMService, RAGService, get_llm_service
 from backend.adapters.brain_adapter import BrainAdapter
@@ -66,20 +63,12 @@ class MiningWorkflow:
         """
         Build the mining state graph.
         
-        Graph structure:
-        START → rag_query → hypothesis → code_gen → validate
-                                                      ↓
-                                          ┌──────────┴──────────┐
-                                          ↓                      ↓
-                                    self_correct           simulate
-                                          ↓                      ↓
-                                      validate             evaluate
-                                          ↓                      ↓
-                                   record_failure    ┌──────────┴──────────┐
-                                          ↓          ↓                      ↓
-                                     next_alpha  save_alpha        record_failure
-                                          ↓          ↓                      ↓
-                                    END/loop    next_alpha             next_alpha
+        Graph structure (Batch):
+        START -> rag_query -> distill_context -> hypothesis -> code_gen 
+                 -> validate <--> self_correct
+                    | (All processed)
+                    v
+                 simulate -> evaluate -> save_results -> END
         """
         # Create graph with state type
         workflow = StateGraph(MiningState)
@@ -93,6 +82,12 @@ class MiningWorkflow:
             "rag_query",
             partial(node_rag_query, rag_service=self.rag_service)
         )
+
+        # Distill Context node
+        workflow.add_node(
+            "distill_context",
+            partial(node_distill_context, llm_service=self.llm_service)
+        )
         
         # Hypothesis node
         workflow.add_node(
@@ -100,7 +95,7 @@ class MiningWorkflow:
             partial(node_hypothesis, llm_service=self.llm_service)
         )
         
-        # Code generation node
+        # Code Generation node
         workflow.add_node(
             "code_gen",
             partial(node_code_gen, llm_service=self.llm_service)
@@ -124,82 +119,42 @@ class MiningWorkflow:
         # Evaluation node (no external deps)
         workflow.add_node("evaluate", node_evaluate)
         
-        # Save alpha node (no external deps)
-        workflow.add_node("save_alpha", node_save_alpha)
+        # Save results node (handles both success and failure saving)
+        workflow.add_node("save_results", node_save_results)
         
-        # Record failure node (no external deps)
-        workflow.add_node("record_failure", node_record_failure)
         
         # =====================================================================
         # Add Edges
         # =====================================================================
         
-        # Linear flow: START → rag_query → hypothesis → code_gen → validate
+        # Linear flow: START → rag_query → distill_context → hypothesis → code_gen → validate
         workflow.set_entry_point("rag_query")
-        workflow.add_edge("rag_query", "hypothesis")
+        workflow.add_edge("rag_query", "distill_context")
+        workflow.add_edge("distill_context", "hypothesis")
         workflow.add_edge("hypothesis", "code_gen")
         workflow.add_edge("code_gen", "validate")
         
-        # After validate: conditional routing
+        # After validate: conditional routing (Batch)
         workflow.add_conditional_edges(
             "validate",
             route_after_validate,
             {
                 "simulate": "simulate",
-                "self_correct": "self_correct",
-                "record_failure": "record_failure"
+                "self_correct": "self_correct"
             }
         )
         
-        # After self-correct: back to validate or give up
-        workflow.add_conditional_edges(
-            "self_correct",
-            route_after_self_correct,
-            {
-                "validate": "validate",
-                "record_failure": "record_failure"
-            }
-        )
+        # After self-correct: Always back to validate (to re-check fixes)
+        workflow.add_edge("self_correct", "validate")
         
-        # After simulate: evaluate or fail
-        workflow.add_conditional_edges(
-            "simulate",
-            route_after_simulate,
-            {
-                "evaluate": "evaluate",
-                "record_failure": "record_failure"
-            }
-        )
+        # After simulate: Unconditional -> evaluate
+        workflow.add_edge("simulate", "evaluate")
         
-        # After evaluate: save or reject
-        workflow.add_conditional_edges(
-            "evaluate",
-            route_after_evaluate,
-            {
-                "save_alpha": "save_alpha",
-                "record_failure": "record_failure"
-            }
-        )
+        # After evaluate: Unconditional -> save_results
+        workflow.add_edge("evaluate", "save_results")
         
-        # After save_alpha: check for more
-        workflow.add_conditional_edges(
-            "save_alpha",
-            route_next_alpha,
-            {
-                "validate": "validate",
-                "end": END
-            }
-        )
-        
-        # After record_failure: check for more
-        workflow.add_conditional_edges(
-            "record_failure",
-            route_next_alpha,
-            {
-                "validate": "validate",
-                "end": END
-            }
-        )
+        # After save_results: END
+        workflow.add_edge("save_results", END)
         
         return workflow
     

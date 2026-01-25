@@ -36,7 +36,7 @@ ALPHA_GENERATION_USER = """## 挖掘任务
  
  ## 可用算子
  {operators_json}
- ***禁止使用除上面给出的算子外的任何算子***
+ ***请仔细阅读每个算子的 definition 和 description，严格按照给出的签名使用，禁止编造参数***
  
  ## 成功模式参考 (Few-shot/Alpha-GPT)
  {few_shot_examples}
@@ -74,6 +74,11 @@ ALPHA_GENERATION_USER = """## 挖掘任务
     - Use `-x` for negation, NOT `neg(x)`.
     - Use `x - y` for subtraction, NOT `sub(x, y)` or `subtract(x, y)`.
  
+ 6. **Complexity Limits (STRICT)**:
+    - **Max Operators**: You must use NO MORE than 7 operators in the expression.
+    - **Max Fields**: You must use NO MORE than 3 distinct data fields.
+    - Keep it simple and robust.
+ 
  ## 任务
  请生成 {num_alphas} 个高质量 Alpha 表达式。
  
@@ -102,26 +107,71 @@ HYPOTHESIS_SYSTEM = """你是一位资深量化策略研究员，擅长从数据
 HYPOTHESIS_USER = """## 数据集分析
 
 **数据集**: {dataset_id}
-**类别**: {category} > {subcategory}
+**类别**: {category} {subcategory}
 **描述**: {description}
 
-**可用字段**:
+**核心可用字段 (Top 20)**:
 {fields_summary}
 
+## 成功模式参考 (Exploitation)
+**利用历史高分模式进行微调**:
+{success_patterns}
+
+## 探索任务 (Exploration)
+**强制探索以下随机/冷门字段**:
+{exploration_fields}
+
 ## 任务
-基于以上数据集特征，生成 3-5 个可验证的投资假设。
+基于以上信息，生成 3-5 个投资假设。请采用 **混合策略 (Hybrid Strategy)**:
+
+1. **稳健型 (Exploitation)**: 生成 1-2 个基于“成功模式”的假设，保证基础得分。
+2. **探索型 (Exploration)**: 生成 1-2 个基于“探索任务”中字段的创新假设，寻找新 Alpha。
 
 输出 JSON 格式:
 ```json
 {{
   "hypotheses": [
     {{
-      "idea": "假设描述",
-      "rationale": "理论依据",
+      "idea": "假设描述 (注明 [Exploit] 或 [Explore])",
+      "rationale": "理论依据 (特别是探索型假设的经济学逻辑)",
       "key_fields": ["field1", "field2"],
       "suggested_operators": ["ts_rank", "ts_corr"]
     }}
   ]
+}}
+```
+"""
+
+# =============================================================================
+# CONCEPT DISTILLATION PROMPT
+# =============================================================================
+
+DISTILL_SYSTEM = """你是一位资深量化数据专家。你需要从海量数据字段中提炼出最核心的投资概念。"""
+
+DISTILL_USER = """## 数据集背景
+**数据集**: {dataset_id}
+**描述**: {description}
+**类别**: {category}
+
+## 成功模式参考
+{success_patterns}
+
+## 字段概览 (按类别聚类)
+{field_categories}
+
+## 任务
+该数据集包含大量字段。为了避免噪音，请根据数据集描述和成功模式，从 **上方列出的字段类别** 中挑选出 **3-5 个最相关** 的类别 (Concepts)。
+
+**重要约束**:
+1. **严格使用列表中的类别名称** (Available Categories)，**禁止发明新的类别名**。
+2. 如果绝大多数字段都在 "General" 或 "Unknown" 类，请包含它们，否则无法检索到字段。
+3. 请优先选择包含丰富信息量的特定类别 (如 "Analyst Estimates")。
+
+输出 JSON 格式:
+```json
+{{
+  "selected_concepts": ["Volatility", "Momentum", "General"],
+  "reasoning": "数据集描述强调了高频波动特性..."
 }}
 ```
 """

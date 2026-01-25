@@ -34,6 +34,9 @@ class AlphaCandidate(BaseModel):
     # Correction state
     correction_attempts: int = 0
     original_expression: Optional[str] = None  # If corrected
+    
+    # Evaluation state
+    quality_status: str = "PENDING"  # PASS, FAIL, PENDING
 
 
 class AlphaResult(BaseModel):
@@ -90,7 +93,7 @@ class MiningState(BaseModel):
     
     # Context data
     fields: List[Dict] = Field(default_factory=list)
-    operators: List[str] = Field(default_factory=list)
+    operators: List[Dict] = Field(default_factory=list)
     num_alphas_target: int = 3
     
     # -------------------------------------------------------------------------
@@ -98,6 +101,13 @@ class MiningState(BaseModel):
     # -------------------------------------------------------------------------
     patterns: List[Dict] = Field(default_factory=list)
     pitfalls: List[Dict] = Field(default_factory=list)
+    dataset_description: str = ""
+    dataset_category: str = ""
+    
+    # Distillation Results
+    distilled_concepts: List[str] = Field(default_factory=list)
+    focused_fields: List[Dict] = Field(default_factory=list)
+
     hypotheses: List[Dict] = Field(default_factory=list)
     
     # -------------------------------------------------------------------------

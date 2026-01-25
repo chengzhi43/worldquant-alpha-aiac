@@ -303,7 +303,9 @@ class BrainAdapter:
                 response = await self.client.get(poll_url)
                 
                 if response.headers.get("Retry-After"):
-                    await asyncio.sleep(float(response.headers["Retry-After"]))
+                    retry_sec = float(response.headers["Retry-After"])
+                    logger.debug(f"Batch poll Retry-After: {retry_sec}s")
+                    await asyncio.sleep(retry_sec)
                     continue
 
                 if response.status_code != 200:
@@ -316,26 +318,29 @@ class BrainAdapter:
                 
                 if status == "DONE":
                     children_ids = data.get("children", [])
-                    results = []
                     
-                    # Fetch details for each child
-                    for child_id in children_ids:
-                         # Fetch child sim status to get alpha ID
-                         child_url = f"{self.BASE_URL}/simulations/{child_id}"
-                         child_resp = await self.client.get(child_url)
-                         if child_resp.status_code == 200:
-                             child_data = child_resp.json()
-                             alpha_data = child_data.get("alpha")
-                             alpha_id = alpha_data if isinstance(alpha_data, str) else alpha_data.get("id")
-                             
-                             if alpha_id:
-                                 # Fetch full alpha details
-                                 details = await self._get_completed_alpha_details(alpha_id)
-                                 results.append(details)
+                    async def fetch_child_result(child_id):
+                        try:
+                             # Fetch child sim status to get alpha ID
+                             child_url = f"{self.BASE_URL}/simulations/{child_id}"
+                             child_resp = await self.client.get(child_url)
+                             if child_resp.status_code == 200:
+                                 child_data = child_resp.json()
+                                 alpha_data = child_data.get("alpha")
+                                 alpha_id = alpha_data if isinstance(alpha_data, str) else alpha_data.get("id")
+                                 
+                                 if alpha_id:
+                                     # Fetch full alpha details
+                                     return await self._get_completed_alpha_details(alpha_id)
+                                 else:
+                                     return {"success": False, "error": "No Alpha ID in child"}
                              else:
-                                 results.append({"success": False, "error": "No Alpha ID in child"})
-                         else:
-                             results.append({"success": False, "error": "Failed to fetch child"})
+                                 return {"success": False, "error": "Failed to fetch child"}
+                        except Exception as e:
+                            return {"success": False, "error": str(e)}
+
+                    # Parallel fetch
+                    results = await asyncio.gather(*(fetch_child_result(cid) for cid in children_ids))
                     
                     return {"success": True, "results": results}
                     

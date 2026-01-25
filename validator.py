@@ -797,6 +797,48 @@ class ExpressionValidator:
         
         return True, final_expr
     
+    def _count_complexity(self, ast: Optional[ASTNode]) -> Tuple[int, set]:
+        """
+        Count operators and unique fields in the AST.
+        Returns: (operator_count, unique_fields_set)
+        """
+        if not ast:
+            return 0, set()
+        
+        op_count = 0
+        fields = set()
+        
+        # Count current node if it's an operator or function
+        if ast.node_type in ['function', 'binop', 'unop']:
+            op_count += 1
+        elif ast.node_type == 'field':
+            fields.add(ast.value)
+            
+        # Helper to process children
+        def process_child(child):
+            nonlocal op_count
+            c_ops, c_fields = 0, set()
+            
+            if isinstance(child, dict):
+                if 'value' in child:
+                    c_ops, c_fields = self._count_complexity(child['value'])
+            elif hasattr(child, 'node_type'):
+                c_ops, c_fields = self._count_complexity(child)
+                
+            op_count += c_ops
+            fields.update(c_fields)
+
+        # Process children
+        if ast.children:
+            if isinstance(ast.children, list):
+                for child in ast.children:
+                    process_child(child)
+            else:
+                # Should be list, but handle just in case
+                process_child(ast.children)
+                
+        return op_count, fields
+
     def check_expression(self, expression: str) -> Dict[str, Any]:
         """
         检查表达式格式是否正确
@@ -838,11 +880,7 @@ class ExpressionValidator:
             # 词法分析（用于调试）
             self.lexer.input(expression)
             tokens = []
-            # 调试：打印识别的标记
-            # print(f"\n调试 - 表达式: {expression}")
-            # print("识别的标记:")
             for token in self.lexer:
-                # print(f"  - 类型: {token.type}, 值: '{token.value}', 位置: {token.lexpos}")
                 tokens.append(token)
             
             # 重新设置词法分析器的输入，以便语法分析器使用
@@ -871,6 +909,18 @@ class ExpressionValidator:
             if bracket_count > 0:
                 all_errors.append("括号不匹配: 左括号过多")
             
+            # Complexity Checks
+            if ast:
+                op_count, unique_fields = self._count_complexity(ast)
+                
+                # Check 1: Max Fields (Limit: 3)
+                if len(unique_fields) > 3:
+                    all_errors.append(f"Field Count Violation: Used {len(unique_fields)} fields ({', '.join(unique_fields)}), limit is 3.")
+                
+                # Check 2: Max Operators (Limit: 8)
+                if op_count > 8:
+                    all_errors.append(f"Complexity Violation: Used {op_count} operators, limit is 8.")
+
             return {
                 'valid': len(all_errors) == 0,
                 'errors': all_errors,

@@ -66,7 +66,7 @@ class MiningAgent:
         task: MiningTask,
         dataset_id: str,
         fields: List[Dict],
-        operators: List[str],
+        operators: List[Dict],
         num_alphas: int = 3
     ) -> List[Alpha]:
         """
@@ -139,7 +139,7 @@ class MiningAgent:
         task: MiningTask,
         dataset_id: str,
         fields: List[Dict],
-        operators: List[str],
+        operators: List[Dict],
         num_alphas: int = 3
     ) -> Dict[str, Any]:
         """

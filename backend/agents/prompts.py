@@ -32,12 +32,17 @@ ALPHA_GENERATION_USER = """## 挖掘任务
  
  ## 可用字段
  {fields_json}
+ ***禁止使用除上面给出的字段外的任何字段***
  
  ## 可用算子
  {operators_json}
+ ***禁止使用除上面给出的算子外的任何算子***
  
  ## 成功模式参考 (Few-shot/Alpha-GPT)
  {few_shot_examples}
+ 
+ ## 输入假设 (Input Hypotheses)
+ {hypotheses_context}
  
  ## 避坑指南 (Negative Constraints & Syntax Rules)
  {negative_constraints}
@@ -63,6 +68,12 @@ ALPHA_GENERATION_USER = """## 挖掘任务
  4. **Logic**:
     - Avoid look-ahead bias (do not use `ts_step(-1)` or negative delays).
  
+ 5. **Mathematical Operations**:
+    - Use standard infix operators (`+`, `-`, `*`, `/`) where possible.
+    - **FORBIDDEN FUNCTIONS**: `neg()`, `add()`, `sub()`, `mul()`, `div()`.
+    - Use `-x` for negation, NOT `neg(x)`.
+    - Use `x - y` for subtraction, NOT `sub(x, y)` or `subtract(x, y)`.
+ 
  ## 任务
  请生成 {num_alphas} 个高质量 Alpha 表达式。
  
@@ -72,6 +83,7 @@ ALPHA_GENERATION_USER = """## 挖掘任务
    "alphas": [
      {{
        "expression": "rank(ts_delta(close, 5))",
+       "hypothesis_id": 1,
        "hypothesis": "Short-term momentum reversal...",
        "explanation": "Ranking the 5-day price change...",
        "expected_sharpe": 1.5

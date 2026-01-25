@@ -209,9 +209,9 @@ class RAGService:
         """Get dataset metadata."""
         query = select(DatasetMetadata).where(
             DatasetMetadata.dataset_id == dataset_id
-        )
+        ).limit(1)
         result = await self.db.execute(query)
-        dataset = result.scalar_one_or_none()
+        dataset = result.scalars().first()
         
         if not dataset:
             return None

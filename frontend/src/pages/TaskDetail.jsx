@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   Row, 
   Col, 
@@ -12,6 +12,7 @@ import {
   Timeline,
   Spin,
   Empty,
+  message,
 } from 'antd'
 import {
   ArrowLeftOutlined,
@@ -26,6 +27,7 @@ import {
   CodeOutlined,
   ExperimentOutlined,
   SyncOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons'
 import api from '../services/api'
 
@@ -59,6 +61,30 @@ export default function TaskDetail() {
     queryKey: ['task', id],
     queryFn: () => api.getTask(id),
     refetchInterval: 5000, // Refresh while task is running
+  })
+
+  const queryClient = useQueryClient()
+
+  // Start task mutation
+  const startTaskMutation = useMutation({
+    mutationFn: api.startTask,
+    onSuccess: () => {
+      message.success('任务已启动')
+      queryClient.invalidateQueries(['task', id])
+    },
+    onError: (err) => {
+        message.error(`启动失败: ${err.message}`)
+    }
+  })
+
+  // Intervene task mutation
+  const interveneMutation = useMutation({
+    mutationFn: ({ id, action }) => api.interveneTask(id, action),
+    onSuccess: (_, variables) => {
+      const actionMap = { PAUSE: '暂停', RESUME: '恢复', STOP: '停止' }
+      message.success(`任务已${actionMap[variables.action]}`)
+      queryClient.invalidateQueries(['task', id])
+    },
   })
 
   if (isLoading) {
@@ -108,18 +134,52 @@ export default function TaskDetail() {
         <Col>
           <Space>
             {task.status === 'PENDING' && (
-              <Button type="primary" icon={<PlayCircleOutlined />}>
+              <Button 
+                type="primary" 
+                icon={<PlayCircleOutlined />}
+                loading={startTaskMutation.isLoading}
+                onClick={() => startTaskMutation.mutate(task.id)}
+              >
                 启动
               </Button>
             )}
             {task.status === 'RUNNING' && (
-              <Button icon={<PauseCircleOutlined />}>
+              <Button 
+                icon={<PauseCircleOutlined />}
+                loading={interveneMutation.isLoading}
+                onClick={() => interveneMutation.mutate({ id: task.id, action: 'PAUSE' })}
+              >
                 暂停
               </Button>
             )}
+            {task.status === 'PAUSED' && (
+              <Button 
+                type="primary"
+                icon={<PlayCircleOutlined />}
+                loading={interveneMutation.isLoading}
+                onClick={() => interveneMutation.mutate({ id: task.id, action: 'RESUME' })}
+              >
+                恢复
+              </Button>
+            )}
             {['RUNNING', 'PAUSED'].includes(task.status) && (
-              <Button danger icon={<StopOutlined />}>
+              <Button 
+                danger 
+                icon={<StopOutlined />}
+                loading={interveneMutation.isLoading}
+                onClick={() => interveneMutation.mutate({ id: task.id, action: 'STOP' })}
+              >
                 停止
+              </Button>
+            )}
+            {['FAILED', 'COMPLETED', 'STOPPED'].includes(task.status) && (
+              <Button 
+                type="primary" 
+                icon={<ReloadOutlined />} 
+                loading={startTaskMutation.isLoading}
+                onClick={() => startTaskMutation.mutate(task.id)}
+              >
+                {task.status === 'COMPLETED' ? '重新运行' : '重试'}
               </Button>
             )}
           </Space>
@@ -184,34 +244,98 @@ export default function TaskDetail() {
                         <Tag>{step.duration_ms ? `${step.duration_ms}ms` : '--'}</Tag>
                       </Space>
                       
-                      {/* Show input/output for some steps */}
-                      {step.step_type === 'HYPOTHESIS' && step.output_data?.hypothesis && (
-                        <Paragraph 
-                          style={{ 
-                            marginTop: 8, 
-                            marginBottom: 0,
-                            color: 'rgba(255,255,255,0.65)',
-                          }}
-                          ellipsis={{ rows: 2 }}
-                        >
-                          💡 {step.output_data.hypothesis}
-                        </Paragraph>
+                      {/* Rich Content Rendering */}
+                      
+                      {/* RAG_QUERY: Show top patterns */}
+                      {step.step_type === 'RAG_QUERY' && step.output_data?.top_patterns && (
+                        <div style={{ marginTop: 8 }}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>参考模式:</Text>
+                          <ul style={{ paddingLeft: 20, margin: '4px 0', fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>
+                            {step.output_data.top_patterns.map((p, i) => (
+                              <li key={i}>{p}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* HYPOTHESIS: Show generated hypotheses */}
+                      {step.step_type === 'HYPOTHESIS' && (
+                        <div style={{ marginTop: 8 }}>
+                           {step.output_data?.hypotheses?.map((h, i) => {
+                             const content = typeof h === 'string' ? h : (h.idea || JSON.stringify(h));
+                             const rationale = typeof h === 'object' && h.rationale ? h.rationale : null;
+                             
+                             return (
+                               <div key={i} style={{ marginBottom: 4 }}>
+                                 <Paragraph ellipsis={{ rows: 2, expandable: true, symbol: '展开' }} style={{ fontSize: 13, marginBottom: 0 }}>
+                                   <Text strong style={{ color: '#00d4ff', marginRight: 8 }}>H{i+1}:</Text>
+                                   {content}
+                                 </Paragraph>
+                                 {rationale && (
+                                   <Text type="secondary" style={{ fontSize: 12, marginLeft: 22 }}>
+                                     {rationale}
+                                   </Text>
+                                 )}
+                               </div>
+                             );
+                           })}
+                           {/* Legacy support */}
+                           {!step.output_data?.hypotheses && step.output_data?.hypothesis && (
+                              <Paragraph ellipsis={{ rows: 2 }} style={{ fontSize: 13 }}>
+                                💡 {step.output_data.hypothesis}
+                              </Paragraph>
+                           )}
+                        </div>
                       )}
                       
-                      {step.step_type === 'CODE_GEN' && step.output_data?.expression && (
+                      {/* CODE_GEN: Show expressions */}
+                      {step.step_type === 'CODE_GEN' && step.output_data?.expressions && (
+                        <div style={{ marginTop: 8 }}>
+                           {step.output_data.expressions.map((expr, i) => (
+                             <pre key={i} style={{ 
+                               fontSize: 11, 
+                               background: '#1f1f1f', 
+                               padding: 4, 
+                               borderRadius: 4,
+                               marginBottom: 4,
+                               overflowX: 'auto'
+                             }}>
+                               {expr}
+                             </pre>
+                           ))}
+                        </div>
+                      )}
+                      
+                      {/* SIMULATE: Show Metrics */}
+                      {step.step_type === 'SIMULATE' && step.output_data?.metrics && (
+                        <div style={{ marginTop: 8 }}>
+                          <Space size="small" wrap>
+                             <Tag color={step.output_data.metrics.sharpe > 1.2 ? "green" : "orange"}>
+                               SR: {step.output_data.metrics.sharpe?.toFixed(2) || '--'}
+                             </Tag>
+                             <Tag>To: {step.output_data.metrics.turnover?.toFixed(2) || '--'}</Tag>
+                             <Tag>Fit: {step.output_data.metrics.fitness?.toFixed(2) || '--'}</Tag>
+                          </Space>
+                        </div>
+                      )}
+
+                      {/* Legacy single expression display */}
+                      {!step.output_data?.expressions && (step.output_data?.expression || step.input_data?.expression) && (
                         <pre style={{ 
                           marginTop: 8, 
                           marginBottom: 0,
                           fontSize: 12,
                           maxHeight: 100,
                           overflow: 'auto',
+                          background: '#1f1f1f',
+                          padding: 5
                         }}>
-                          {step.output_data.expression}
+                          {step.output_data?.expression || step.input_data?.expression}
                         </pre>
                       )}
                       
                       {step.error_message && (
-                        <Text type="danger" style={{ display: 'block', marginTop: 8 }}>
+                        <Text type="danger" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
                           ❌ {step.error_message}
                         </Text>
                       )}

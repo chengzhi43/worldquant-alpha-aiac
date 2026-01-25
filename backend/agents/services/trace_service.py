@@ -112,6 +112,7 @@ class TraceService:
         
         self.db.add(trace_step)
         await self.db.flush()
+        await self.db.commit() # Force commit for real-time visibility
         
         logger.debug(
             f"[TraceService] Record persisted | "

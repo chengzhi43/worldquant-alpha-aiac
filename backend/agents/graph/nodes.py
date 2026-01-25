@@ -7,12 +7,14 @@ import json
 import time
 from typing import Dict, List, Any, Optional
 from loguru import logger
+from langchain_core.runnables import RunnableConfig
 
 from backend.agents.graph.state import (
     MiningState, AlphaCandidate, AlphaResult, FailureRecord, 
-    TraceStepData, add_trace_step
+    TraceStepData, add_trace_step, merge_state
 )
 from backend.agents.services import LLMService, RAGService, get_llm_service
+from backend.agents.services.trace_service import TraceService, TraceStepRecord
 from backend.agents.prompts import (
     ALPHA_GENERATION_SYSTEM, ALPHA_GENERATION_USER,
     HYPOTHESIS_SYSTEM, HYPOTHESIS_USER,
@@ -23,10 +25,58 @@ from backend.config import settings
 
 
 # =============================================================================
+# HELPER: Real-Time Trace + State Update
+# =============================================================================
+
+async def record_trace(
+    state: MiningState,
+    trace_service: Optional[TraceService],
+    step_type: str,
+    input_data: Dict = None,
+    output_data: Dict = None,
+    duration_ms: int = 0,
+    status: str = "SUCCESS",
+    error_message: str = None
+) -> Dict:
+    """Helper to update state AND persist trace to DB immediately."""
+    
+    # 1. Update In-Memory State (Pydantic)
+    state_update = add_trace_step(
+        state, step_type, input_data, output_data, duration_ms, status, error_message
+    )
+    
+    # 2. Persist to DB (Real-Time)
+    if trace_service:
+        try:
+            # Note: TraceService manages its own step_order counter if used via create_record,
+            # but here we want to sync with State if possible.
+            # However, persistence usually just needs the data.
+            # We construct record manually to ensure we commit exactly what's in state.
+            
+            # Use state.step_order + 1 as that's what add_trace_step uses
+            step_order = state.step_order + 1
+            
+            record = TraceStepRecord(
+                step_type=step_type,
+                step_order=step_order,
+                input_data=input_data or {},
+                output_data=output_data or {},
+                duration_ms=duration_ms,
+                status=status,
+                error_message=error_message
+            )
+            await trace_service.persist_record(record)
+        except Exception as e:
+            logger.error(f"Failed to persist trace step: {e}")
+            
+    return state_update
+
+
+# =============================================================================
 # NODE: RAG Query
 # =============================================================================
 
-async def node_rag_query(state: MiningState, rag_service: RAGService) -> Dict:
+async def node_rag_query(state: MiningState, rag_service: RAGService, config: RunnableConfig = None) -> Dict:
     """
     Retrieve success patterns and failure pitfalls from knowledge base.
     
@@ -41,6 +91,9 @@ async def node_rag_query(state: MiningState, rag_service: RAGService) -> Dict:
     node_name = "RAG_QUERY"
     
     logger.info(f"[{node_name}] 开始执行 | task={state.task_id} dataset={state.dataset_id}")
+    
+    # Extract TraceService
+    trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
     try:
         result = await rag_service.query(
@@ -57,11 +110,18 @@ async def node_rag_query(state: MiningState, rag_service: RAGService) -> Dict:
         )
         
         # Create trace step
-        trace_update = add_trace_step(
+        # Create trace step
+        trace_update = await record_trace(
             state,
+            trace_service,
             step_type=node_name,
             input_data={"dataset_id": state.dataset_id, "region": state.region},
-            output_data={"patterns_count": len(result.patterns), "pitfalls_count": len(result.pitfalls)},
+            output_data={
+                "patterns_count": len(result.patterns), 
+                "pitfalls_count": len(result.pitfalls),
+                "top_patterns": [p['pattern'] for p in result.patterns[:3]],
+                "top_pitfalls": [p['pattern'] for p in result.pitfalls[:3]]
+            },
             duration_ms=duration_ms,
             status="SUCCESS"
         )
@@ -76,8 +136,8 @@ async def node_rag_query(state: MiningState, rag_service: RAGService) -> Dict:
         duration_ms = int((time.time() - start_time) * 1000)
         logger.error(f"[{node_name}] 失败 | error={e}")
         
-        trace_update = add_trace_step(
-            state, node_name, {}, {},
+        trace_update = await record_trace(
+            state, trace_service, node_name, {}, {},
             duration_ms, "FAILED", str(e)
         )
         
@@ -93,7 +153,7 @@ async def node_rag_query(state: MiningState, rag_service: RAGService) -> Dict:
 # NODE: Hypothesis Generation
 # =============================================================================
 
-async def node_hypothesis(state: MiningState, llm_service: LLMService) -> Dict:
+async def node_hypothesis(state: MiningState, llm_service: LLMService, config: RunnableConfig = None) -> Dict:
     """
     Generate investment hypotheses based on dataset.
     
@@ -106,6 +166,9 @@ async def node_hypothesis(state: MiningState, llm_service: LLMService) -> Dict:
     """
     start_time = time.time()
     node_name = "HYPOTHESIS"
+    
+    # Extract TraceService
+    trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
     logger.info(f"[{node_name}] 开始执行 | task={state.task_id}")
     
@@ -137,10 +200,10 @@ async def node_hypothesis(state: MiningState, llm_service: LLMService) -> Dict:
     
     logger.info(f"[{node_name}] 完成 | hypotheses={len(hypotheses)}")
     
-    trace_update = add_trace_step(
-        state, node_name,
+    trace_update = await record_trace(
+        state, trace_service, node_name,
         {"dataset_id": state.dataset_id},
-        {"hypotheses_count": len(hypotheses)},
+        {"hypotheses_count": len(hypotheses), "hypotheses": hypotheses[:3]},
         duration_ms,
         "SUCCESS" if response.success else "FAILED",
         response.error
@@ -156,7 +219,7 @@ async def node_hypothesis(state: MiningState, llm_service: LLMService) -> Dict:
 # NODE: Code Generation
 # =============================================================================
 
-async def node_code_gen(state: MiningState, llm_service: LLMService) -> Dict:
+async def node_code_gen(state: MiningState, llm_service: LLMService, config: RunnableConfig = None) -> Dict:
     """
     Generate Alpha expressions using LLM.
     
@@ -169,6 +232,9 @@ async def node_code_gen(state: MiningState, llm_service: LLMService) -> Dict:
     """
     start_time = time.time()
     node_name = "CODE_GEN"
+    
+    # Extract TraceService
+    trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
     logger.info(f"[{node_name}] 开始执行 | task={state.task_id}")
     
@@ -184,6 +250,12 @@ async def node_code_gen(state: MiningState, llm_service: LLMService) -> Dict:
         for p in state.pitfalls
     ]) or "暂无特殊限制"
     
+    # Prepare hypotheses context
+    hypotheses_text = "\n".join([
+        f"ID {i+1}: {h.get('idea', h) if isinstance(h, dict) else h}" 
+        for i, h in enumerate(state.hypotheses)
+    ]) or "暂无特定假设"
+
     prompt = ALPHA_GENERATION_USER.format(
         region=state.region,
         universe=state.universe,
@@ -192,6 +264,7 @@ async def node_code_gen(state: MiningState, llm_service: LLMService) -> Dict:
         fields_json=json.dumps(state.fields[:30], ensure_ascii=False),
         operators_json=json.dumps(state.operators[:50], ensure_ascii=False),
         few_shot_examples=few_shot_text,
+        hypotheses_context=hypotheses_text,
         negative_constraints=constraints_text,
         num_alphas=state.num_alphas_target
     )
@@ -210,9 +283,18 @@ async def node_code_gen(state: MiningState, llm_service: LLMService) -> Dict:
     if response.success and response.parsed:
         raw_alphas = response.parsed.get("alphas", [])
         for alpha_data in raw_alphas:
+            # Capture hypothesis_id if available to link back
+            h_id = alpha_data.get("hypothesis_id")
+            hypothesis_text = alpha_data.get("hypothesis")
+            
+            # If ID is present, prepend to hypothesis text for visibility
+            final_hypothesis = hypothesis_text
+            if h_id:
+                final_hypothesis = f"[H{h_id}] {hypothesis_text}"
+                
             candidate = AlphaCandidate(
                 expression=alpha_data.get("expression", ""),
-                hypothesis=alpha_data.get("hypothesis"),
+                hypothesis=final_hypothesis,
                 explanation=alpha_data.get("explanation"),
                 expected_sharpe=alpha_data.get("expected_sharpe")
             )
@@ -221,10 +303,13 @@ async def node_code_gen(state: MiningState, llm_service: LLMService) -> Dict:
     
     logger.info(f"[{node_name}] 完成 | alphas={len(pending_alphas)}")
     
-    trace_update = add_trace_step(
-        state, node_name,
+    trace_update = await record_trace(
+        state, trace_service, node_name,
         {"num_alphas_target": state.num_alphas_target},
-        {"alphas_generated": len(pending_alphas)},
+        {
+            "alphas_generated": len(pending_alphas),
+            "expressions": [a.expression[:200] for a in pending_alphas]
+        },
         duration_ms,
         "SUCCESS" if response.success else "FAILED",
         response.error
@@ -246,7 +331,7 @@ from validator import ExpressionValidator
 # Initialize Validator (Singleton-ish)
 _VALIDATOR = ExpressionValidator()
 
-async def node_validate(state: MiningState) -> Dict:
+async def node_validate(state: MiningState, config: RunnableConfig = None) -> Dict:
     """
     Validate current alpha expression syntax using ExpressionValidator.
     
@@ -259,6 +344,9 @@ async def node_validate(state: MiningState) -> Dict:
     """
     start_time = time.time()
     node_name = "VALIDATE"
+    
+    # Extract TraceService
+    trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
     if state.current_alpha_index >= len(state.pending_alphas):
         logger.warning(f"[{node_name}] 无待处理 Alpha")
@@ -319,8 +407,8 @@ async def node_validate(state: MiningState) -> Dict:
     
     logger.info(f"[{node_name}] 完成 | valid={is_valid}")
     
-    trace_update = add_trace_step(
-        state, node_name,
+    trace_update = await record_trace(
+        state, trace_service, node_name,
         {"expression": expression[:100]},
         {"is_valid": is_valid},
         duration_ms,
@@ -339,7 +427,7 @@ async def node_validate(state: MiningState) -> Dict:
 # NODE: Self-Correct
 # =============================================================================
 
-async def node_self_correct(state: MiningState, llm_service: LLMService) -> Dict:
+async def node_self_correct(state: MiningState, llm_service: LLMService, config: RunnableConfig = None) -> Dict:
     """
     Use LLM to fix a failed expression.
     
@@ -353,6 +441,9 @@ async def node_self_correct(state: MiningState, llm_service: LLMService) -> Dict
     """
     start_time = time.time()
     node_name = "SELF_CORRECT"
+    
+    # Extract TraceService
+    trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
     current = state.pending_alphas[state.current_alpha_index]
     
@@ -401,8 +492,8 @@ async def node_self_correct(state: MiningState, llm_service: LLMService) -> Dict
     
     logger.info(f"[{node_name}] 完成 | fixed={bool(response.parsed and response.parsed.get('fixed_expression'))}")
     
-    trace_update = add_trace_step(
-        state, node_name,
+    trace_update = await record_trace(
+        state, trace_service, node_name,
         {"original": current.expression[:100], "error": current.validation_error},
         {"fixed": updated_alpha.expression[:100] if updated_alpha.expression else None},
         duration_ms,
@@ -421,7 +512,7 @@ async def node_self_correct(state: MiningState, llm_service: LLMService) -> Dict
 # NODE: Simulate
 # =============================================================================
 
-async def node_simulate(state: MiningState, brain: BrainAdapter) -> Dict:
+async def node_simulate(state: MiningState, brain: BrainAdapter, config: RunnableConfig = None) -> Dict:
     """
     Simulate alpha on BRAIN platform.
     
@@ -434,6 +525,9 @@ async def node_simulate(state: MiningState, brain: BrainAdapter) -> Dict:
     """
     start_time = time.time()
     node_name = "SIMULATE"
+    
+    # Extract TraceService
+    trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
     current = state.pending_alphas[state.current_alpha_index]
     
@@ -475,10 +569,14 @@ async def node_simulate(state: MiningState, brain: BrainAdapter) -> Dict:
     
     logger.info(f"[{node_name}] 完成 | success={success}")
     
-    trace_update = add_trace_step(
-        state, node_name,
+    trace_update = await record_trace(
+        state, trace_service, node_name,
         {"expression": current.expression[:100], "region": state.region},
-        {"success": success, "alpha_id": updated_alpha.alpha_id},
+        {
+            "success": success, 
+            "alpha_id": updated_alpha.alpha_id,
+            "metrics": updated_alpha.metrics
+        },
         duration_ms,
         "SUCCESS" if success else "FAILED",
         updated_alpha.simulation_error
@@ -494,7 +592,7 @@ async def node_simulate(state: MiningState, brain: BrainAdapter) -> Dict:
 # NODE: Evaluate Quality
 # =============================================================================
 
-async def node_evaluate(state: MiningState) -> Dict:
+async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Dict:
     """
     Evaluate alpha quality against thresholds.
     
@@ -507,6 +605,9 @@ async def node_evaluate(state: MiningState) -> Dict:
     """
     start_time = time.time()
     node_name = "EVALUATE"
+    
+    # Extract TraceService
+    trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
     current = state.pending_alphas[state.current_alpha_index]
     metrics = current.metrics or {}
@@ -535,8 +636,8 @@ async def node_evaluate(state: MiningState) -> Dict:
         f"sharpe={sharpe:.2f} turnover={turnover:.2f} fitness={fitness:.2f}"
     )
     
-    trace_update = add_trace_step(
-        state, node_name,
+    trace_update = await record_trace(
+        state, trace_service, node_name,
         {"sharpe": sharpe, "turnover": turnover, "fitness": fitness},
         {"quality_pass": quality_pass},
         duration_ms,
@@ -590,7 +691,7 @@ async def node_save_alpha(state: MiningState) -> Dict:
 # NODE: Record Failure
 # =============================================================================
 
-async def node_record_failure(state: MiningState) -> Dict:
+async def node_record_failure(state: MiningState, config: RunnableConfig = None) -> Dict:
     """
     Record failed alpha attempt.
     
@@ -602,6 +703,9 @@ async def node_record_failure(state: MiningState) -> Dict:
         - current_alpha_index (advance)
     """
     node_name = "RECORD_FAILURE"
+    
+    # Extract TraceService
+    trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
     current = state.pending_alphas[state.current_alpha_index]
     
@@ -624,8 +728,9 @@ async def node_record_failure(state: MiningState) -> Dict:
     logger.info(f"[{node_name}] 失败记录 | type={error_type}")
     
     # Add trace step for failure
-    trace_update = add_trace_step(
-        state, node_name,
+    # Add trace step for failure
+    trace_update = await record_trace(
+        state, trace_service, node_name,
         {"error_type": error_type, "expression": current.expression[:100]},
         {"error_message": error_message},
         0,

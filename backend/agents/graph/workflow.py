@@ -213,7 +213,8 @@ class MiningWorkflow:
         dataset_id: str,
         fields: List[Dict],
         operators: List[str],
-        num_alphas: int = 3
+        num_alphas: int = 3,
+        config: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
         Execute the mining workflow.
@@ -249,7 +250,7 @@ class MiningWorkflow:
         
         # Execute graph (Synchronous-style for full state)
         # We use invoke to ensure we get the accumulated final state, NOT just partial updates
-        final_state = await app.ainvoke(initial_state)
+        final_state = await app.ainvoke(initial_state, config=config)
         
         # Log completion
         logger.info("[MiningWorkflow] Worklfow execution finished")
@@ -285,14 +286,15 @@ class MiningWorkflow:
         dataset_id: str,
         fields: List[Dict],
         operators: List[str],
-        num_alphas: int = 3
+        num_alphas: int = 3,
+        config: Dict[str, Any] = None
     ):
         """
         Execute workflow and persist results to database.
         """
         from backend.models import Alpha, AlphaFailure, TraceStep
         
-        result = await self.run(task, dataset_id, fields, operators, num_alphas)
+        result = await self.run(task, dataset_id, fields, operators, num_alphas, config)
         
         # Persist alphas
         for alpha_result in result.get("generated_alphas", []):
@@ -321,19 +323,23 @@ class MiningWorkflow:
             )
             self.db.add(fail_record)
         
-        # Persist trace steps
-        for trace in result.get("trace_steps", []):
-            step = TraceStep(
-                task_id=task.id,
-                step_type=trace.step_type,
-                step_order=trace.step_order,
-                input_data=trace.input_data,
-                output_data=trace.output_data,
-                duration_ms=trace.duration_ms,
-                status=trace.status,
-                error_message=trace.error_message
-            )
-            self.db.add(step)
+        # Persist trace steps (ONLY if TraceService was NOT used)
+        # If TraceService is in config, we assume it handled real-time persistence
+        has_realtime_trace = config and config.get("configurable", {}).get("trace_service")
+        
+        if not has_realtime_trace:
+            for trace in result.get("trace_steps", []):
+                step = TraceStep(
+                    task_id=task.id,
+                    step_type=trace.step_type,
+                    step_order=trace.step_order,
+                    input_data=trace.input_data,
+                    output_data=trace.output_data,
+                    duration_ms=trace.duration_ms,
+                    status=trace.status,
+                    error_message=trace.error_message
+                )
+                self.db.add(step)
         
         await self.db.commit()
         

@@ -254,7 +254,7 @@ async def start_task(task_id: int, db: AsyncSession = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    if task.status not in ["PENDING", "PAUSED", "STOPPED"]:
+    if task.status not in ["PENDING", "PAUSED", "STOPPED", "FAILED", "COMPLETED"]:
         raise HTTPException(status_code=400, detail=f"Cannot start task in {task.status} status")
     
     await db.execute(

@@ -17,6 +17,11 @@ import redis.asyncio as redis
 from tenacity import retry, stop_after_attempt, wait_exponential
 from loguru import logger
 from sqlalchemy import select
+import logging
+
+# Suppress httpx interaction logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from backend.config import settings
 from backend.database import AsyncSessionLocal
@@ -283,7 +288,7 @@ class BrainAdapter:
             logger.error(f"Batch Simulate error: {e}")
             return [{"success": False, "error": str(e)} for _ in expressions]
 
-    async def _wait_for_multisim(self, location: str, max_wait: int = 600) -> Dict:
+    async def _wait_for_multisim(self, location: str, max_wait: int = 900) -> Dict:
         """Poll for multi-simulation completion."""
         # Determine full URL
         if location.startswith("http"):
@@ -294,7 +299,7 @@ class BrainAdapter:
         start_time = datetime.now()
         while (datetime.now() - start_time).seconds < max_wait:
             try:
-                logger.debug(f"Polling multi-sim: {poll_url}")
+                # logger.debug(f"Polling multi-sim: {poll_url}")
                 response = await self.client.get(poll_url)
                 
                 if response.headers.get("Retry-After"):
@@ -345,7 +350,7 @@ class BrainAdapter:
                 
         return {"success": False, "error": "Timeout"}
 
-    async def _wait_for_simulation(self, location: str, max_wait: int = 300) -> Dict:
+    async def _wait_for_simulation(self, location: str, max_wait: int = 900) -> Dict:
         # Determine full URL
         if location.startswith("http"):
             poll_url = location
@@ -355,7 +360,7 @@ class BrainAdapter:
         start_time = datetime.now()
         while (datetime.now() - start_time).seconds < max_wait:
             try:
-                logger.debug(f"Polling simulation status: {poll_url}")
+                # logger.debug(f"Polling simulation status: {poll_url}")
                 response = await self.client.get(poll_url)
                 
                 # Check outcome FIRST, ignore Retry-After if done
@@ -376,7 +381,7 @@ class BrainAdapter:
                 # If running, check rate limit/retry
                 if response.headers.get("Retry-After"):
                     retry_after = float(response.headers["Retry-After"])
-                    logger.debug(f"Simulation pending... sleeping {retry_after}s")
+                    # logger.debug(f"Simulation pending... sleeping {retry_after}s")
                     await asyncio.sleep(retry_after)
                     continue
 
@@ -389,7 +394,8 @@ class BrainAdapter:
                 await asyncio.sleep(3)
 
             except Exception as e:
-                logger.error(f"Poll loop error: {e}")
+                import traceback
+                logger.error(f"Poll loop error: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(3)
                 
         return {"success": False, "error": "Timeout"}

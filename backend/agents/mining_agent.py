@@ -15,6 +15,7 @@ from loguru import logger
 from backend.models import MiningTask, Alpha
 from backend.agents.graph import MiningWorkflow, create_mining_graph
 from backend.agents.services import LLMService, get_llm_service
+from backend.agents.services.trace_service import TraceService
 from backend.adapters.brain_adapter import BrainAdapter
 
 
@@ -91,14 +92,19 @@ class MiningAgent:
             f"task={task.id} dataset={dataset_id} target={num_alphas}"
         )
         
+        # Initialize TraceService for Real-Time Tracing
+        trace_service = TraceService(self.db, task.id)
+        
         try:
             # Run LangGraph workflow with persistence
+            # Pass TraceService via config
             result = await self._workflow.run_with_persistence(
                 task=task,
                 dataset_id=dataset_id,
                 fields=fields,
                 operators=operators,
-                num_alphas=num_alphas
+                num_alphas=num_alphas,
+                config={"configurable": {"trace_service": trace_service}}
             )
             
             # Convert results to Alpha models for backward compatibility

@@ -112,12 +112,18 @@ export default function TaskDetail() {
   // Get iteration numbers sorted descending (latest first)
   const iterations = Object.keys(groupedSteps).map(Number).sort((a, b) => b - a)
   
-  // Active keys for collapse (default to latest iteration)
+  // Active keys for collapse
   const [activeIterations, setActiveIterations] = React.useState([])
+  const lastMaxIterationRef = React.useRef(0)
 
   React.useEffect(() => {
-    if (iterations.length > 0 && activeIterations.length === 0) {
-      setActiveIterations([iterations[0].toString()])
+    if (iterations.length > 0) {
+      const currentMax = iterations[0]
+      // Only auto-expand if we see a NEW iteration (or first load)
+      if (currentMax > lastMaxIterationRef.current) {
+        setActiveIterations([currentMax.toString()])
+        lastMaxIterationRef.current = currentMax
+      }
     }
   }, [iterations])
 
@@ -461,40 +467,147 @@ export default function TaskDetail() {
                                  </div>
                                )}
 
-                               {/* ROUND_SUMMARY: Show Round Stats & Strategy */}
+                               {/* ROUND_SUMMARY: Show Rich Round Stats & Intelligent Strategy */}
                                {step.step_type === 'ROUND_SUMMARY' && step.output_data && (
                                  <div style={{ marginTop: 12 }}>
                                    <Row gutter={[12, 12]}>
+                                     {/* Left: Performance Metrics */}
                                      <Col span={12}>
-                                       <div style={{ background: 'rgba(0,0,0,0.2)', padding: 8, borderRadius: 4 }}>
-                                         <Text type="secondary" style={{ fontSize: 12 }}>本轮战绩</Text>
-                                         <div style={{ marginTop: 4 }}>
+                                       <div style={{ background: 'rgba(0,0,0,0.2)', padding: 10, borderRadius: 4 }}>
+                                         <Text type="secondary" style={{ fontSize: 12, fontWeight: 'bold' }}>本轮战绩</Text>
+                                         <div style={{ marginTop: 6 }}>
                                             <Tag color={step.output_data.success_rate > 0 ? "green" : "red"} style={{ marginRight: 4 }}>
                                               {step.output_data.mining_success ? "MINING SUCCESS" : "MINING FAIL"}
                                             </Tag>
                                             <Text style={{ fontSize: 12 }}>
-                                              Alphas: {step.output_data.total_alphas} (✅{step.output_data.succeeded_alphas})
+                                              Alphas: {step.output_data.simulated_alphas ?? 0} (✅{step.output_data.succeeded_alphas ?? 0})
                                             </Text>
                                          </div>
-                                         <div style={{ marginTop: 4 }}>
-                                            <Text style={{ fontSize: 12 }}>
-                                              Best Sharpe: <span style={{ color: '#00ff88' }}>{step.output_data.best_sharpe?.toFixed(3) ?? 'N/A'}</span>
+                                         
+                                         {/* Multi-dimensional Quality Metrics */}
+                                         <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                                            <Text style={{ fontSize: 11 }}>
+                                              Best Sharpe: <span style={{ color: '#00ff88', fontWeight: 'bold' }}>{step.output_data.best_sharpe?.toFixed(2) ?? 'N/A'}</span>
+                                            </Text>
+                                            <Text style={{ fontSize: 11 }}>
+                                              Avg Sharpe: <span style={{ color: '#87d068' }}>{step.output_data.avg_sharpe?.toFixed(2) ?? 'N/A'}</span>
+                                            </Text>
+                                            <Text style={{ fontSize: 11 }}>
+                                              Best Fitness: <span style={{ color: '#00d4ff' }}>{step.output_data.best_fitness?.toFixed(2) ?? 'N/A'}</span>
+                                            </Text>
+                                            <Text style={{ fontSize: 11 }}>
+                                              Avg Fitness: <span style={{ color: '#69c0ff' }}>{step.output_data.avg_fitness?.toFixed(2) ?? 'N/A'}</span>
+                                            </Text>
+                                            <Text style={{ fontSize: 11 }}>
+                                              Avg Turnover: <span style={{ color: '#faad14' }}>{step.output_data.avg_turnover?.toFixed(2) ?? 'N/A'}</span>
+                                            </Text>
+                                            <Text style={{ fontSize: 11 }}>
+                                              Avg Returns: <span style={{ color: '#b37feb' }}>{step.output_data.avg_returns ? (step.output_data.avg_returns * 100).toFixed(1) + '%' : 'N/A'}</span>
                                             </Text>
                                          </div>
+                                         
+                                         {/* Failure Analysis */}
+                                         {step.output_data.error_breakdown && (
+                                           <div style={{ marginTop: 8, borderTop: '1px solid #303030', paddingTop: 6 }}>
+                                             <Text type="secondary" style={{ fontSize: 11 }}>错误分析:</Text>
+                                             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 2 }}>
+                                               {step.output_data.error_breakdown.syntax_errors > 0 && (
+                                                 <Tag color="red" style={{ fontSize: 10 }}>语法: {step.output_data.error_breakdown.syntax_errors}</Tag>
+                                               )}
+                                               {step.output_data.error_breakdown.simulation_errors > 0 && (
+                                                 <Tag color="orange" style={{ fontSize: 10 }}>模拟: {step.output_data.error_breakdown.simulation_errors}</Tag>
+                                               )}
+                                               {step.output_data.error_breakdown.quality_failures > 0 && (
+                                                 <Tag color="gold" style={{ fontSize: 10 }}>质量: {step.output_data.error_breakdown.quality_failures}</Tag>
+                                               )}
+                                             </div>
+                                           </div>
+                                         )}
+                                         
+                                         {/* Problematic Fields */}
+                                         {step.output_data.problematic_fields?.length > 0 && (
+                                           <div style={{ marginTop: 4 }}>
+                                             <Text type="secondary" style={{ fontSize: 10 }}>问题字段: </Text>
+                                             {step.output_data.problematic_fields.slice(0, 3).map((f, i) => (
+                                               <Tag key={i} color="volcano" style={{ fontSize: 9 }}>{f}</Tag>
+                                             ))}
+                                           </div>
+                                         )}
                                        </div>
                                      </Col>
+                                     
+                                     {/* Right: Intelligent Strategy */}
                                      <Col span={12}>
-                                        <div style={{ background: 'rgba(0,0,0,0.2)', padding: 8, borderRadius: 4 }}>
-                                          <Text type="secondary" style={{ fontSize: 12 }}>下轮策略 (Adaptive)</Text>
+                                        <div style={{ background: 'rgba(0,0,0,0.2)', padding: 10, borderRadius: 4 }}>
+                                          <Text type="secondary" style={{ fontSize: 12, fontWeight: 'bold' }}>下轮策略 (RD-Agent Style)</Text>
                                           {step.output_data.next_strategy ? (
-                                             <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                                <div>
+                                             <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                                {/* Core Parameters */}
+                                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                                                   <Tag color="geekblue">Temp: {step.output_data.next_strategy.temperature?.toFixed(1) ?? 'N/A'}</Tag>
-                                                  <Text type="secondary" style={{ fontSize: 11 }}>
-                                                    ({step.output_data.next_strategy.action})
-                                                  </Text>
+                                                  <Tag color="purple">Exploration: {step.output_data.next_strategy.exploration_weight?.toFixed(1) ?? 'N/A'}</Tag>
                                                 </div>
-                                                <Tag color="purple">Exploration: {step.output_data.next_strategy.exploration_weight?.toFixed(1) ?? 'N/A'}</Tag>
+                                                
+                                                {/* Action Summary */}
+                                                {step.output_data.next_strategy.action && (
+                                                  <Text style={{ fontSize: 11, color: '#00d4ff' }}>
+                                                    📋 {step.output_data.next_strategy.action}
+                                                  </Text>
+                                                )}
+                                                
+                                                {/* Reasoning */}
+                                                {step.output_data.next_strategy.reasoning && (
+                                                  <Paragraph 
+                                                    ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}
+                                                    style={{ fontSize: 10, color: 'rgba(255,255,255,0.65)', marginBottom: 0 }}
+                                                  >
+                                                    💭 {step.output_data.next_strategy.reasoning}
+                                                  </Paragraph>
+                                                )}
+                                                
+                                                {/* Focus Areas */}
+                                                {step.output_data.next_strategy.focus_hypotheses?.length > 0 && (
+                                                  <div>
+                                                    <Text type="secondary" style={{ fontSize: 10 }}>🎯 聚焦方向:</Text>
+                                                    <div style={{ marginTop: 2 }}>
+                                                      {step.output_data.next_strategy.focus_hypotheses.slice(0, 2).map((h, i) => (
+                                                        <Tag key={i} color="cyan" style={{ fontSize: 9, marginBottom: 2 }}>{h}</Tag>
+                                                      ))}
+                                                    </div>
+                                                  </div>
+                                                )}
+                                                
+                                                {/* Amplify & Avoid Patterns */}
+                                                <div style={{ display: 'flex', gap: 8 }}>
+                                                  {step.output_data.next_strategy.amplify_patterns?.length > 0 && (
+                                                    <div style={{ flex: 1 }}>
+                                                      <Text type="secondary" style={{ fontSize: 10 }}>✅ 强化:</Text>
+                                                      {step.output_data.next_strategy.amplify_patterns.slice(0, 2).map((p, i) => (
+                                                        <Tag key={i} color="green" style={{ fontSize: 9, display: 'block', marginTop: 2 }}>{p}</Tag>
+                                                      ))}
+                                                    </div>
+                                                  )}
+                                                  {step.output_data.next_strategy.avoid_patterns?.length > 0 && (
+                                                    <div style={{ flex: 1 }}>
+                                                      <Text type="secondary" style={{ fontSize: 10 }}>❌ 避免:</Text>
+                                                      {step.output_data.next_strategy.avoid_patterns.slice(0, 2).map((p, i) => (
+                                                        <Tag key={i} color="red" style={{ fontSize: 9, display: 'block', marginTop: 2 }}>{p}</Tag>
+                                                      ))}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                                
+                                                {/* Optimization Suggestions */}
+                                                {step.output_data.next_strategy.optimization_suggestions?.length > 0 && (
+                                                  <div style={{ borderTop: '1px solid #303030', paddingTop: 4 }}>
+                                                    <Text type="secondary" style={{ fontSize: 10 }}>💡 优化建议:</Text>
+                                                    {step.output_data.next_strategy.optimization_suggestions.slice(0, 1).map((s, i) => (
+                                                      <Text key={i} style={{ fontSize: 10, display: 'block', color: '#fadb14' }}>
+                                                        [{s.type}] {s.suggestion}
+                                                      </Text>
+                                                    ))}
+                                                  </div>
+                                                )}
                                              </div>
                                           ) : (
                                             <div style={{ marginTop: 4 }}>

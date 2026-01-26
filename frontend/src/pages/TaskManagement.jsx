@@ -262,6 +262,7 @@ export default function TaskManagement() {
             dataset_strategy: 'AUTO',
             agent_mode: 'AUTONOMOUS',
             daily_goal: 4,
+            max_iterations: 10,
           }}
         >
           <Form.Item
@@ -323,9 +324,18 @@ export default function TaskManagement() {
             </Form.Item>
           )}
 
-          <Form.Item name="daily_goal" label="每日目标 (Alpha 数量)">
-            <InputNumber min={1} max={20} style={{ width: '100%' }} />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="daily_goal" label="每日目标 (Alpha 数量)">
+                <InputNumber min={1} max={20} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="max_iterations" label="最大迭代次数">
+                <InputNumber min={1} max={100} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
             <Space>

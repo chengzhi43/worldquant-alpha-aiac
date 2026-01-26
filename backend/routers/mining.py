@@ -46,6 +46,10 @@ async def create_task(
     service: MiningService = Depends(get_mining_service)
 ):
     """Create a new mining task."""
+    # Use max_iterations as the effective limit if it's provided and iteration_limit is default
+    # Or simply force iteration_limit to match max_iterations for consistency
+    effective_limit = request.max_iterations
+    
     task = await service.create_task(
         name=request.name,
         region=request.region,
@@ -53,7 +57,7 @@ async def create_task(
         hypothesis=request.hypothesis,
         dataset_ids=request.dataset_ids,
         operator_ids=request.operator_ids,
-        iteration_limit=request.iteration_limit,
+        iteration_limit=effective_limit,  # Sync with max_iterations
         max_iterations=request.max_iterations
     )
     # Pydantic conversion handles the rest

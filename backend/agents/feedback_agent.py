@@ -347,47 +347,124 @@ class FeedbackAgent:
             
             analysis = json.loads(self._clean_json(response.choices[0].message.content))
             
-            # Store learned knowledge
+            # Store learned knowledge with enhanced structure
             new_entries = 0
             
-            # 1. Store New Patterns
+            # 1. Store New Patterns (with templates and variants)
             for p in analysis.get("new_patterns", []):
-                # Check exist
-                if not await self._pattern_exists(p.get("pattern", "")):
+                pattern_str = p.get("pattern", "")
+                if pattern_str and not await self._pattern_exists(pattern_str):
                     entry = KnowledgeEntry(
                         entry_type='SUCCESS_PATTERN',
-                        pattern=p.get("pattern"),
+                        pattern=pattern_str,
                         description=p.get("description"),
                         meta_data={
                             'round': iteration,
+                            'dataset_id': dataset_id,
+                            'region': region,
                             'score': p.get("score"),
+                            'template': p.get("template"),  # Generalized template
+                            'economic_logic': p.get("economic_logic"),
+                            'variants': p.get("variants", []),
                             'source': 'evolution_loop'
                         }
                     )
                     self.db.add(entry)
                     new_entries += 1
 
-            # 2. Store New Pitfalls
+            # 2. Store New Pitfalls (with error type and severity)
             for p in analysis.get("new_pitfalls", []):
-                if not await self._pattern_exists(p.get("pattern", "")):
+                pattern_str = p.get("pattern", "")
+                if pattern_str and not await self._pattern_exists(pattern_str):
                     entry = KnowledgeEntry(
                         entry_type='FAILURE_PITFALL',
-                        pattern=p.get("pattern"),
+                        pattern=pattern_str,
                         description=p.get("description"),
                         meta_data={
                             'round': iteration,
+                            'dataset_id': dataset_id,
+                            'region': region,
+                            'error_type': p.get("error_type"),
                             'recommendation': p.get("recommendation"),
+                            'severity': p.get("severity", "medium"),
                             'source': 'evolution_loop'
                         }
                     )
                     self.db.add(entry)
                     new_entries += 1
             
+            # 3. Store Field Insights (for RAG retrieval)
+            field_insights = analysis.get("field_insights", {})
+            if field_insights:
+                # Store effective fields
+                for field in field_insights.get("effective_fields", []):
+                    field_pattern = f"FIELD_EFFECTIVE:{field}"
+                    if not await self._pattern_exists(field_pattern):
+                        entry = KnowledgeEntry(
+                            entry_type='FIELD_INSIGHT',
+                            pattern=field_pattern,
+                            description=f"字段 {field} 在 {dataset_id} 数据集中表现有效",
+                            meta_data={
+                                'round': iteration,
+                                'dataset_id': dataset_id,
+                                'region': region,
+                                'insight_type': 'effective',
+                                'source': 'evolution_loop'
+                            }
+                        )
+                        self.db.add(entry)
+                        new_entries += 1
+                
+                # Store problematic fields
+                for field in field_insights.get("problematic_fields", []):
+                    field_pattern = f"FIELD_PROBLEMATIC:{field}"
+                    if not await self._pattern_exists(field_pattern):
+                        entry = KnowledgeEntry(
+                            entry_type='FIELD_INSIGHT',
+                            pattern=field_pattern,
+                            description=f"字段 {field} 在 {dataset_id} 数据集中存在问题，建议避免",
+                            meta_data={
+                                'round': iteration,
+                                'dataset_id': dataset_id,
+                                'region': region,
+                                'insight_type': 'problematic',
+                                'source': 'evolution_loop'
+                            }
+                        )
+                        self.db.add(entry)
+                        new_entries += 1
+            
+            # 4. Store Hypothesis Evolution Insights
+            hypothesis_evo = analysis.get("hypothesis_evolution", {})
+            if hypothesis_evo:
+                # Store promising directions
+                for direction in hypothesis_evo.get("promising_directions", []):
+                    hypo_pattern = f"HYPOTHESIS_PROMISING:{direction[:50]}"
+                    if not await self._pattern_exists(hypo_pattern):
+                        entry = KnowledgeEntry(
+                            entry_type='HYPOTHESIS_INSIGHT',
+                            pattern=hypo_pattern,
+                            description=f"投资假设方向值得继续探索: {direction}",
+                            meta_data={
+                                'round': iteration,
+                                'dataset_id': dataset_id,
+                                'region': region,
+                                'direction_type': 'promising',
+                                'source': 'evolution_loop'
+                            }
+                        )
+                        self.db.add(entry)
+                        new_entries += 1
+            
             await self.db.commit()
-            logger.info(f"[Feedback] Round learning complete. Added {new_entries} knowledge entries.")
+            logger.info(f"[Feedback] Round learning complete. Added {new_entries} knowledge entries (patterns, pitfalls, field/hypothesis insights).")
             
             return {
                 "new_entries": new_entries,
+                "patterns_added": len(analysis.get("new_patterns", [])),
+                "pitfalls_added": len(analysis.get("new_pitfalls", [])),
+                "field_insights": field_insights,
+                "hypothesis_evolution": hypothesis_evo,
                 "analysis": analysis
             }
             

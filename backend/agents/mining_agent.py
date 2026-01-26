@@ -17,6 +17,7 @@ from backend.models import MiningTask, Alpha
 from backend.agents.graph import MiningWorkflow, create_mining_graph
 from backend.agents.services import LLMService, get_llm_service
 from backend.agents.services.trace_service import TraceService
+from backend.agents.strategy_agent import StrategyAgent, create_strategy_agent, RoundMetrics
 from backend.adapters.brain_adapter import BrainAdapter
 
 
@@ -60,7 +61,10 @@ class MiningAgent:
             llm_service=self.llm_service
         )
         
-        logger.info("[MiningAgent] Initialized with LangGraph workflow")
+        # Create Strategy Agent for intelligent next-round planning
+        self._strategy_agent = create_strategy_agent(llm_service=self.llm_service)
+        
+        logger.info("[MiningAgent] Initialized with LangGraph workflow + StrategyAgent")
     
     async def run_mining_iteration(
         self,
@@ -248,44 +252,48 @@ class MiningAgent:
                 # Continue to next iteration on failure (resilience)
                 continue
             
-            # --- ADAPTIVE STRATEGY: Adjust Parameters for Next Round ---
-            # Calculate success rate for this round
-            round_success = len([a for a in alphas if a.quality_status == "PASS"])
-            success_rate = round_success / max(len(alphas), 1)
+            # --- INTELLIGENT STRATEGY: RD-Agent/Alpha-GPT Style Analysis ---
+            # Query recent failures for comprehensive analysis
+            from backend.models import AlphaFailure
+            from datetime import datetime, timedelta
             
-            # 1. Adjust Temperature (Exploration vs Exploitation)
-            # If failed (0 success), increase temperature to explore more
-            # If succeeded, decrease temperature to exploit (stabilize)
-            # 1. Adjust Temperature (Exploration vs Exploitation)
-            # If failed (0 success), increase temperature to explore more
-            # If succeeded, decrease temperature to exploit (stabilize)
-            current_temp = 0.7 # Default
-            strategy_msg = "保持当前策略"
+            failures_query = select(AlphaFailure).where(
+                AlphaFailure.task_id == task.id,
+                AlphaFailure.created_at >= datetime.utcnow() - timedelta(minutes=5),
+                AlphaFailure.is_analyzed == False
+            )
+            res = await self.db.execute(failures_query)
+            recent_failures = res.scalars().all()
+            failures_dicts = [
+                {
+                    "expression": f.expression, 
+                    "error_message": f.error_message,
+                    "error_type": f.error_type
+                } 
+                for f in recent_failures
+            ]
             
-            if round_success == 0:
-                new_temp = min(1.0, current_temp + 0.1 * (iteration % 3 + 1))
-                strategy_msg = f"探索模式: 上轮全败，提升 Temperature {current_temp}->{new_temp} 以增加多样性"
-                logger.info(f"[Strategy] Round failed. Increasing Temp: {current_temp} -> {new_temp} (Exploration)")
-            else:
-                new_temp = max(0.1, current_temp - 0.05 * round_success)
-                strategy_msg = f"收敛模式: 上轮成功 {round_success} 个，降低 Temperature {current_temp}->{new_temp} 以稳定产出"
-                logger.info(f"[Strategy] Round success. Decreasing Temp: {current_temp} -> {new_temp} (Exploitation)")
+            # Compute comprehensive metrics using StrategyAgent
+            round_metrics = self._strategy_agent.compute_round_metrics(alphas, failures_dicts)
             
-            # Calculate best stats
-            best_sharpe = -999.0
-            for a in alphas:
-                if a.quality_status == "PASS" and a.metrics:
-                    # Handle both obj and dict metrics
-                    m = a.metrics
-                    s = m.get("sharpe", -999.0) if isinstance(m, dict) else -999.0
-                    if s > best_sharpe:
-                        best_sharpe = s
+            # Generate intelligent next-round strategy
+            next_strategy = await self._strategy_agent.generate_strategy(
+                iteration=iteration,
+                max_iterations=max_iterations,
+                alphas=alphas,
+                failures=failures_dicts,
+                dataset_id=dataset_id,
+                region=task.region,
+                cumulative_success=total_success,
+                target_goal=target_alphas
+            )
             
-            if best_sharpe == -999.0:
-                best_sharpe = None
+            logger.info(
+                f"[MiningAgent] Strategy generated | "
+                f"action={next_strategy.action_summary} temp={next_strategy.temperature}"
+            )
 
-            # Record Strategy Trace (Ephemeral Service)
-            # Use a high step_order (e.g. 99) to ensure it appears at the end
+            # Record Comprehensive ROUND_SUMMARY with rich metrics
             try:
                 summary_tracer = TraceService(self.db, task.id, initial_step_order=99, iteration=iteration)
                 await summary_tracer.persist_record(
@@ -293,20 +301,47 @@ class MiningAgent:
                         step_type="ROUND_SUMMARY",
                         status="SUCCESS",
                         input_data={
-                            "round_success": round_success,
-                            "total_alphas": len(alphas),
-                            "target_alphas": target_alphas
+                            "round": iteration,
+                            "total_alphas": round_metrics.total_alphas,
+                            "target_alphas": target_alphas,
+                            "cumulative_success": total_success
                         },
                         output_data={
-                            "mining_success": round_success > 0,
-                            "total_alphas": len(alphas),
-                            "succeeded_alphas": round_success,
-                            "success_rate": success_rate,
-                            "best_sharpe": best_sharpe,
+                            "mining_success": round_metrics.passed_alphas > 0,
+                            "simulated_alphas": round_metrics.simulated_alphas, # Added metric
+                            "succeeded_alphas": round_metrics.passed_alphas,
+                            "failed_alphas": round_metrics.failed_alphas,
+                            "success_rate": round(round_metrics.success_rate, 3),
+                            
+                            # Quality metrics (multi-dimensional)
+                            "best_sharpe": round_metrics.best_sharpe,
+                            "avg_sharpe": round_metrics.avg_sharpe,
+                            "best_fitness": round_metrics.best_fitness,
+                            "avg_fitness": round_metrics.avg_fitness,
+                            "avg_turnover": round_metrics.avg_turnover,
+                            "avg_returns": round_metrics.avg_returns,
+                            
+                            # Failure analysis
+                            "error_breakdown": {
+                                "syntax_errors": round_metrics.syntax_errors,
+                                "simulation_errors": round_metrics.simulation_errors,
+                                "quality_failures": round_metrics.quality_failures
+                            },
+                            "common_error_types": round_metrics.common_error_types,
+                            "problematic_fields": round_metrics.problematic_fields,
+                            
+                            # Intelligent next-round strategy
                             "next_strategy": {
-                                "temperature": new_temp,
-                                "action": strategy_msg,
-                                "exploration_weight": 0.5 + (0.1 * iteration) if round_success == 0 else 0.5 # Simple heuristic
+                                "temperature": next_strategy.temperature,
+                                "exploration_weight": next_strategy.exploration_weight,
+                                "action": next_strategy.action_summary,
+                                "reasoning": next_strategy.reasoning,
+                                "focus_hypotheses": next_strategy.focus_hypotheses[:3],
+                                "avoid_patterns": next_strategy.avoid_patterns[:3],
+                                "amplify_patterns": next_strategy.amplify_patterns[:3],
+                                "preferred_fields": next_strategy.preferred_fields[:5],
+                                "avoid_fields": next_strategy.avoid_fields[:3],
+                                "optimization_suggestions": next_strategy.optimization_suggestions[:2]
                             }
                         }
                     )
@@ -315,35 +350,9 @@ class MiningAgent:
                 logger.error(f"Failed to record round summary: {e}")
             
             # --- FEEDBACK LOOP: Learn from this round ---
-            # Extract failures from the result dict (need to capture failures from run_mining_iteration or workflow)
-            # Since run_mining_iteration only returns successes, we need failures too.
-            # We'll use a hack here: Query failures from DB for this task created in last minute
-            # Ideally, run_mining_iteration should return both, but we kept it back-compat.
-            # Let's improve run_evolution_loop by using workflow.run_with_persistence directly to get full stats
-            # OR we just query the DB for failures created in this round
-            
+            # Reuse failures_dicts from strategy analysis above
             from backend.agents.feedback_agent import FeedbackAgent
             feedback_agent = FeedbackAgent(self.db)
-            
-            # Query recent failures for this task
-            from backend.models import AlphaFailure
-            from datetime import datetime, timedelta
-            
-            # Simple heuristic: failures created in last 5 minutes for this task
-            # A more robust way would be to get trace steps from current round
-            failures_query = select(AlphaFailure).where(
-                AlphaFailure.task_id == task.id,
-                AlphaFailure.created_at >= datetime.utcnow() - timedelta(minutes=5),
-                AlphaFailure.is_analyzed == False
-            )
-            res = await self.db.execute(failures_query)
-            recent_failures = res.scalars().all()
-            
-            # Convert to dict format for feedback agent
-            failures_dicts = [
-                {"expression": f.expression, "error_message": f.error_message} 
-                for f in recent_failures
-            ]
             
             try:
                 await feedback_agent.learn_from_round(
@@ -354,7 +363,7 @@ class MiningAgent:
                     region=task.region
                 )
                 
-                # Mark as analyzed
+                # Mark failures as analyzed
                 for f in recent_failures:
                     f.is_analyzed = True
                 await self.db.commit()

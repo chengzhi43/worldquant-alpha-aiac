@@ -254,11 +254,18 @@ FAILURE_ANALYSIS_USER = """## 今日失败样本 ({count} 个)
 """
 
 # =============================================================================
-# ROUND ANALYSIS (EVOLUTION LOOP)
+# ROUND ANALYSIS (EVOLUTION LOOP) - Enhanced with RD-Agent/Alpha-GPT insights
 # =============================================================================
 
-ROUND_ANALYSIS_SYSTEM = """你是一位 Alpha 挖掘策略专家，擅长从一轮挖掘结果中提炼洞察，指导下一轮迭代。
-目标：通过分析本轮的成功和失败案例，总结出具体的模式(Patterns)和避坑指南(Pitfalls)，帮助下一轮生成更高质量的 Alpha。"""
+ROUND_ANALYSIS_SYSTEM = """你是一位 Alpha 挖掘策略专家，擅长从一轮挖掘结果中提炼深度洞察，指导下一轮迭代。
+
+核心能力（参考 RD-Agent/Alpha-GPT/Chain-of-Alpha 论文）：
+1. **结构化模式提取**: 从成功Alpha中提取可复用的算子组合模板
+2. **失败根因分析**: 区分语法错误、字段问题、逻辑缺陷、质量不达标
+3. **假设演进建议**: 基于结果推断哪些投资假设值得深入探索
+4. **参数敏感性洞察**: 识别对窗口大小、衰减参数等敏感的模式
+
+目标：生成可直接指导下一轮生成的结构化知识，而非泛泛的建议。"""
 
 ROUND_ANALYSIS_USER = """## 本轮挖掘结果 (Round {iteration})
 
@@ -273,29 +280,57 @@ ROUND_ANALYSIS_USER = """## 本轮挖掘结果 (Round {iteration})
 区域: {region}
 
 ## 任务
-请分析以上结果，提炼出对下一轮挖掘有帮助的知识：
+请深度分析以上结果，提炼出对下一轮挖掘有帮助的结构化知识：
 
-1. **成功模式 (Patterns)**: 成功 Alpha 中有哪些共性的算子组合或逻辑？(例如: ts_rank(volume) + ts_corr 表现好)
-2. **失败陷阱 (Pitfalls)**: 哪些操作导致了普遍的错误？(例如: 某个字段在这个区域不可用，或者某种算子组合容易过拟合)
-3. **策略调整**: 下一轮应该更关注什么？
+1. **成功模式 (Patterns)**: 
+   - 提取具体的算子组合模板（如: `ts_rank(X, N) * ts_decay_linear(Y, M)`）
+   - 分析为什么这个模式有效（经济逻辑）
+   - 给出可泛化的变体建议
+
+2. **失败陷阱 (Pitfalls)**: 
+   - 识别导致失败的具体原因类型
+   - 提供明确的避免建议
+
+3. **字段洞察 (Field Insights)**:
+   - 哪些字段在成功案例中频繁出现
+   - 哪些字段导致了问题
+
+4. **假设演进 (Hypothesis Evolution)**:
+   - 哪些投资假设方向值得继续探索
+   - 哪些假设应该放弃或调整
 
 输出 JSON 格式:
 ```json
 {{
   "new_patterns": [
     {{
-      "pattern": "ts_rank(returns) * ts_decay_linear(volume)",
-      "description": "动量与成交量结合在近期表现稳定",
+      "pattern": "ts_rank(returns, 20) * ts_decay_linear(volume, 10)",
+      "template": "ts_rank(MOMENTUM_FIELD, N) * ts_decay_linear(VOLUME_FIELD, M)",
+      "description": "动量与成交量结合，短期动量(N=10-30)配合中期成交量衰减(M=5-15)",
+      "economic_logic": "价量配合反映市场认可度",
+      "variants": ["可尝试ts_corr替代乘法", "可加入波动率归一化"],
       "score": 0.8
     }}
   ],
   "new_pitfalls": [
     {{
       "pattern": "ts_zscore(fundamental_data)",
+      "error_type": "DATA_QUALITY",
       "description": "基础数据缺失值过多导致 zscore 异常",
-      "recommendation": "使用前先用 fillna 或 rank 处理"
+      "recommendation": "使用前先用 ts_mean 填充或改用 rank",
+      "severity": "high"
     }}
-  ]
+  ],
+  "field_insights": {{
+    "effective_fields": ["returns", "volume", "close"],
+    "problematic_fields": ["some_sparse_field"],
+    "unexplored_fields": ["建议下轮尝试的字段"]
+  }},
+  "hypothesis_evolution": {{
+    "promising_directions": ["动量-成交量交互", "波动率调整收益"],
+    "abandon_directions": ["纯基本面因子在此数据集效果差"],
+    "pivot_suggestions": ["从绝对值转向相对排名", "增加时序特征"]
+  }}
 }}
 ```
 """

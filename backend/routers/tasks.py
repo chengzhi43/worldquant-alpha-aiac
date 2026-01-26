@@ -44,6 +44,8 @@ class TaskResponse(BaseModel):
     status: str
     daily_goal: int
     progress_current: int
+    current_iteration: int = 0
+    max_iterations: int = 10
     created_at: datetime
     updated_at: Optional[datetime] = None
     
@@ -111,6 +113,8 @@ async def list_tasks(
         status=t.status,
         daily_goal=t.daily_goal,
         progress_current=t.progress_current,
+        current_iteration=t.current_iteration,
+        max_iterations=t.max_iterations,
         created_at=t.created_at,
         updated_at=t.updated_at
     ) for t in tasks]
@@ -150,6 +154,8 @@ async def create_task(
         status=task.status,
         daily_goal=task.daily_goal,
         progress_current=task.progress_current,
+        current_iteration=task.current_iteration,
+        max_iterations=task.max_iterations,
         created_at=task.created_at,
         updated_at=task.updated_at
     )
@@ -190,12 +196,15 @@ async def get_task(task_id: int, db: AsyncSession = Depends(get_db)):
         status=task.status,
         daily_goal=task.daily_goal,
         progress_current=task.progress_current,
+        current_iteration=task.current_iteration,
+        max_iterations=task.max_iterations,
         created_at=task.created_at,
         updated_at=task.updated_at,
         trace_steps=[TraceStepResponse(
             id=s.id,
             step_type=s.step_type,
             step_order=s.step_order,
+            iteration=s.iteration,
             input_data=s.input_data or {},
             output_data=s.output_data or {},
             duration_ms=s.duration_ms,
@@ -234,6 +243,7 @@ async def get_task_trace(
         id=s.id,
         step_type=s.step_type,
         step_order=s.step_order,
+        iteration=s.iteration,
         input_data=s.input_data or {},
         output_data=s.output_data or {},
         duration_ms=s.duration_ms,

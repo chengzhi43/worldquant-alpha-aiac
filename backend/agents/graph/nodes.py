@@ -740,7 +740,7 @@ async def node_simulate(state: MiningState, brain: BrainAdapter, config: Runnabl
         {"batch_size": len(valid_indices), "expressions": [e[:50] for e in expressions]},
         {
             "success_count": success_count, 
-            "results": [{"id": r.get("alpha_id"), "err": r.get("error")} for r in results]
+            "results": [{"id": r.get("alpha_id"), "metrics": r.get("metrics"), "err": r.get("error")} for r in results]
         },
         duration_ms,
         "SUCCESS" if success_count > 0 else "PARTIAL_FAILURE"
@@ -813,6 +813,9 @@ async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Di
             "id": alpha.alpha_id,
             "pass": quality_pass,
             "sharpe": sharpe,
+            "returns": metrics.get("returns"),
+            "turnover": turnover,
+            "fitness": fitness,
         })
         
         updated_alphas[i] = alpha

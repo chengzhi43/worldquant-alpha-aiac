@@ -289,144 +289,240 @@ class BrainAdapter:
             return [{"success": False, "error": str(e)} for _ in expressions]
 
     async def _wait_for_multisim(self, location: str, max_wait: int = 900) -> Dict:
-        """Poll for multi-simulation completion."""
+        """
+        Poll for multi-simulation completion.
+        Reference: ace_lib.py `multisimulation_progress` function.
+        Key insight: Use Retry-After header presence to determine if still running.
+        """
         # Determine full URL
         if location.startswith("http"):
             poll_url = location
         else:
             poll_url = f"{self.BASE_URL}{location}"
-            
-        start_time = datetime.now()
-        while (datetime.now() - start_time).seconds < max_wait:
+        
+        error_flag = False
+        retry_count = 0
+        max_retries = 3
+        
+        while True:
             try:
-                # logger.debug(f"Polling multi-sim: {poll_url}")
                 response = await self.client.get(poll_url)
                 
-                if response.headers.get("Retry-After"):
-                    retry_sec = float(response.headers["Retry-After"])
-                    logger.debug(f"Batch poll Retry-After: {retry_sec}s")
-                    await asyncio.sleep(retry_sec)
-                    continue
-
-                if response.status_code != 200:
-                    logger.warning(f"Batch poll non-200: {response.status_code}")
-                    await asyncio.sleep(5)
-                    continue
-
-                data = response.json()
-                status = data.get("status", "")
+                # Handle non-2xx with retry
+                if response.status_code // 100 != 2:
+                    logger.error(f"Multi-sim poll {poll_url}, Status: {response.status_code}, Retry")
+                    await asyncio.sleep(30)
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        continue
+                    else:
+                        error_flag = True
+                        break
                 
-                if status == "DONE":
-                    children_ids = data.get("children", [])
-                    
-                    async def fetch_child_result(child_id):
-                        try:
-                             # Fetch child sim status to get alpha ID
-                             child_url = f"{self.BASE_URL}/simulations/{child_id}"
-                             child_resp = await self.client.get(child_url)
-                             if child_resp.status_code == 200:
-                                 child_data = child_resp.json()
-                                 alpha_data = child_data.get("alpha")
-                                 alpha_id = alpha_data if isinstance(alpha_data, str) else alpha_data.get("id")
-                                 
-                                 if alpha_id:
-                                     # Fetch full alpha details
-                                     return await self._get_completed_alpha_details(alpha_id)
-                                 else:
-                                     return {"success": False, "error": "No Alpha ID in child"}
-                             else:
-                                 return {"success": False, "error": "Failed to fetch child"}
-                        except Exception as e:
-                            return {"success": False, "error": str(e)}
-
-                    # Parallel fetch
-                    results = await asyncio.gather(*(fetch_child_result(cid) for cid in children_ids))
-                    
-                    return {"success": True, "results": results}
-                    
-                elif status == "ERROR":
-                    return {"success": False, "error": data.get("message")}
+                # Key check: If Retry-After header is missing or 0, simulation is complete
+                retry_after = response.headers.get("Retry-After") or response.headers.get("retry-after")
                 
-                await asyncio.sleep(3)
+                if not retry_after or retry_after == "0":
+                    # Simulation completed - check for error status
+                    data = response.json()
+                    if data.get("status", "ERROR") == "ERROR":
+                        error_flag = True
+                        logger.error(f"Multi-simulation error: {data}")
+                    break
+                
+                # Still running, wait as instructed
+                await asyncio.sleep(float(retry_after))
+                
             except Exception as e:
                 import traceback
-                logger.error(f"Batch poll error: {traceback.format_exc()}")
+                logger.error(f"Multi-sim poll error: {traceback.format_exc()}")
                 await asyncio.sleep(3)
+                retry_count += 1
+                if retry_count > max_retries:
+                    return {"success": False, "error": str(e)}
+        
+        # Get children from final response
+        try:
+            data = response.json()
+            children = data.get("children", [])
+        except:
+            return {"success": False, "error": "Failed to parse multi-sim response"}
+        
+        # Handle error case
+        if error_flag:
+            if not children:
+                logger.error(f"Multi-simulation failed: {data}")
+                return {"success": False, "error": data.get("message", "Multi-simulation failed")}
+            # Log child errors
+            for child_id in children:
+                child_resp = await self.client.get(f"{self.BASE_URL}/simulations/{child_id}")
+                logger.error(f"Child simulation {child_id} failed: {child_resp.json()}")
+            return {"success": False, "error": "Multi-simulation children failed"}
+        
+        # Check if we have children
+        if not children or len(children) == 0:
+            logger.warning(f"Multi-simulation completed but no children: {data}")
+            return {"success": False, "error": "No children in multi-simulation"}
+        
+        # Fetch results for each child
+        async def fetch_child_result(child_id):
+            try:
+                # Fetch child simulation to get alpha ID
+                child_url = f"{self.BASE_URL}/simulations/{child_id}"
+                child_resp = await self.client.get(child_url)
                 
-        return {"success": False, "error": "Timeout"}
+                if child_resp.status_code != 200:
+                    logger.error(f"Failed to fetch child sim {child_id}: {child_resp.status_code}")
+                    return {"success": False, "error": f"Failed to fetch child {child_id}"}
+                
+                child_data = child_resp.json()
+                alpha_id = child_data.get("alpha")
+                
+                if not alpha_id:
+                    logger.warning(f"Child simulation {child_id} has no alpha: {child_data}")
+                    return {"success": False, "error": f"No alpha in child {child_id}"}
+                
+                # Fetch full alpha details
+                return await self._get_completed_alpha_details(alpha_id)
+                
+            except Exception as e:
+                logger.error(f"Error fetching child {child_id}: {e}")
+                return {"success": False, "error": str(e)}
+        
+        # Fetch all children (parallel)
+        results = await asyncio.gather(*(fetch_child_result(cid) for cid in children))
+        return {"success": True, "results": list(results)}
 
     async def _wait_for_simulation(self, location: str, max_wait: int = 900) -> Dict:
+        """
+        Monitor simulation progress and return result when complete.
+        Reference: ace_lib.py `simulation_progress` function.
+        Key insight: Use Retry-After header presence to determine if still running.
+        """
         # Determine full URL
         if location.startswith("http"):
             poll_url = location
         else:
             poll_url = f"{self.BASE_URL}{location}"
             
-        start_time = datetime.now()
-        while (datetime.now() - start_time).seconds < max_wait:
+        error_flag = False
+        retry_count = 0
+        max_retries = 3
+        
+        while True:
             try:
-                # logger.debug(f"Polling simulation status: {poll_url}")
                 response = await self.client.get(poll_url)
                 
-                # Check outcome FIRST, ignore Retry-After if done
-                if response.status_code == 200:
+                # Handle non-2xx response with retry
+                if response.status_code // 100 != 2:
+                    logger.error(f"Simulation poll {poll_url}, Status: {response.status_code}, Retry")
+                    await asyncio.sleep(30)
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        continue
+                    else:
+                        logger.error(f"Simulation {poll_url} failed after {max_retries} retries")
+                        error_flag = True
+                        break
+                
+                # Key check: If Retry-After header is missing or 0, simulation is complete
+                retry_after = response.headers.get("Retry-After") or response.headers.get("retry-after")
+                
+                if not retry_after or retry_after == "0":
+                    # Simulation completed - check for error status
                     data = response.json()
-                    status = data.get("status", "")
-                    
-                    if status == "DONE":
-                        alpha_id = data.get("alpha")
-                        # 2-step: fetch result details
-                        if alpha_id:
-                            return await self._get_completed_alpha_details(alpha_id)
-                        return {"success": False, "error": "No Alpha ID returned"}
-                        
-                    elif status == "ERROR":
-                        return {"success": False, "error": data.get("message")}
+                    if data.get("status", "ERROR") == "ERROR":
+                        error_flag = True
+                        logger.error(f"Simulation error: {data}")
+                    break
                 
-                # If running, check rate limit/retry
-                if response.headers.get("Retry-After"):
-                    retry_after = float(response.headers["Retry-After"])
-                    # logger.debug(f"Simulation pending... sleeping {retry_after}s")
-                    await asyncio.sleep(retry_after)
-                    continue
-
-                if response.status_code != 200:
-                    logger.warning(f"Poll warning: {response.status_code} {response.text}")
-                    await asyncio.sleep(5)
-                    continue
+                # Still running, wait as instructed
+                await asyncio.sleep(float(retry_after))
                 
-                # Pending but no Retry-After?
-                await asyncio.sleep(3)
-
             except Exception as e:
                 import traceback
                 logger.error(f"Poll loop error: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(3)
-                
-        return {"success": False, "error": "Timeout"}
+                retry_count += 1
+                if retry_count > max_retries:
+                    return {"success": False, "error": str(e)}
+        
+        if error_flag:
+            try:
+                error_data = response.json()
+                return {"success": False, "error": error_data.get("message", str(error_data))}
+            except:
+                return {"success": False, "error": "Simulation failed"}
+        
+        # Get alpha ID from completed simulation
+        try:
+            data = response.json()
+            alpha_id = data.get("alpha")
+            
+            if not alpha_id:
+                logger.warning(f"Simulation completed but no alpha ID: {data}")
+                return {"success": False, "error": "No Alpha ID returned"}
+            
+            # Fetch full alpha details
+            return await self._get_completed_alpha_details(alpha_id)
+            
+        except Exception as e:
+            logger.error(f"Failed to parse simulation result: {e}")
+            return {"success": False, "error": str(e)}
 
     async def _get_completed_alpha_details(self, alpha_id: str) -> Dict:
-        """Fetch full details for a completed alpha."""
+        """
+        Fetch full details for a completed alpha.
+        Reference: ace_lib.py `get_simulation_result_json` function.
+        Uses retry-after header polling to ensure data is ready.
+        """
+        if alpha_id is None:
+            return {"success": False, "error": "No alpha ID provided"}
+            
         try:
             url = f"{self.BASE_URL}/alphas/{alpha_id}"
-            response = await self.client.get(url)
+            
+            # Poll until no retry-after header (matching ace_lib.py pattern)
+            while True:
+                response = await self.client.get(url)
+                
+                # Check for retry-after header (case-insensitive)
+                retry_after = response.headers.get("Retry-After") or response.headers.get("retry-after")
+                
+                if retry_after:
+                    await asyncio.sleep(float(retry_after))
+                else:
+                    break
             
             if response.status_code != 200:
-                logger.error(f"Failed to get alpha details: {response.text}")
-                return {"success": False, "error": "Failed to fetch details"}
-                
-            alpha = response.json()
+                logger.error(f"Failed to get alpha details [{response.status_code}]: {response.text}")
+                return {"success": False, "error": f"Failed to fetch details: {response.status_code}"}
+            
+            try:
+                alpha = response.json()
+            except Exception:
+                logger.error(f"Failed to parse alpha JSON: alpha_id={alpha_id}, headers={response.headers}, text={response.text}")
+                return {"success": False, "error": "Failed to parse alpha response"}
+            
+            # Return full alpha data with structured metrics
             return {
-                 "success": True, 
-                 "alpha_id": alpha.get("id"),
-                 "metrics": {
-                     "sharpe": alpha.get("is", {}).get("sharpe"),
-                     "returns": alpha.get("is", {}).get("returns"),
-                     "turnover": alpha.get("is", {}).get("turnover"),
-                     "fitness": alpha.get("is", {}).get("fitness"),
-                     "max_dd": alpha.get("is", {}).get("drawdown")
-                 }
-             }
+                "success": True, 
+                "alpha_id": alpha.get("id"),
+                "expression": alpha.get("regular", {}).get("code") if alpha.get("regular") else None,
+                "settings": alpha.get("settings", {}),
+                "metrics": {
+                    "sharpe": alpha.get("is", {}).get("sharpe"),
+                    "returns": alpha.get("is", {}).get("returns"),
+                    "turnover": alpha.get("is", {}).get("turnover"),
+                    "fitness": alpha.get("is", {}).get("fitness"),
+                    "max_dd": alpha.get("is", {}).get("drawdown")
+                },
+                "is": alpha.get("is", {}),
+                "os": alpha.get("os", {}),
+                "train": alpha.get("train"),
+                "test": alpha.get("test"),
+                "raw": alpha  # Include full raw response for debugging
+            }
         except Exception as e:
             logger.error(f"Get alpha details error: {e}")
             return {"success": False, "error": str(e)}

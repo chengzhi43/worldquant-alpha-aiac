@@ -246,15 +246,53 @@ export default function TaskDetail() {
                       
                       {/* Rich Content Rendering */}
                       
-                      {/* RAG_QUERY: Show top patterns */}
-                      {step.step_type === 'RAG_QUERY' && step.output_data?.top_patterns && (
+                      {/* RAG_QUERY: Show top patterns and pitfalls */}
+                      {step.step_type === 'RAG_QUERY' && (
                         <div style={{ marginTop: 8 }}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>参考模式:</Text>
-                          <ul style={{ paddingLeft: 20, margin: '4px 0', fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>
-                            {step.output_data.top_patterns.map((p, i) => (
-                              <li key={i}>{p}</li>
-                            ))}
-                          </ul>
+                          {step.output_data?.top_patterns?.length > 0 ? (
+                            <>
+                              <Text type="secondary" style={{ fontSize: 12 }}>参考模式:</Text>
+                              <ul style={{ paddingLeft: 20, margin: '4px 0', fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>
+                                {step.output_data.top_patterns.map((p, i) => (
+                                  <li key={i}>{p}</li>
+                                ))}
+                              </ul>
+                            </>
+                          ) : (
+                             <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>暂无参考模式</Text>
+                          )}
+                          
+                          {step.output_data?.top_pitfalls?.length > 0 && (
+                            <>
+                              <Text type="secondary" style={{ fontSize: 12, marginTop: 8, display: 'block' }}>避坑指南:</Text>
+                              <ul style={{ paddingLeft: 20, margin: '4px 0', fontSize: 12, color: '#ff7875' }}>
+                                {step.output_data.top_pitfalls.map((p, i) => (
+                                  <li key={i}>{p}</li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {/* DISTILL_CONTEXT: Show reasoning and selected concepts */}
+                      {step.step_type === 'DISTILL_CONTEXT' && (
+                        <div style={{ marginTop: 8 }}>
+                          {step.output_data?.reasoning && (
+                            <Paragraph 
+                              ellipsis={{ rows: 2, expandable: true, symbol: '展开' }} 
+                              style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', fontStyle: 'italic', marginBottom: 8 }}
+                            >
+                               "{step.output_data.reasoning}"
+                            </Paragraph>
+                          )}
+                          {step.output_data?.selected_concepts && (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                              {step.output_data.selected_concepts.map((c, i) => (
+                                <Tag key={i} color="blue" style={{ fontSize: 11 }}>{c}</Tag>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -306,16 +344,52 @@ export default function TaskDetail() {
                         </div>
                       )}
                       
-                      {/* SIMULATE: Show Metrics */}
-                      {step.step_type === 'SIMULATE' && step.output_data?.metrics && (
+                      {/* SIMULATE: Show Results with Metrics */}
+                      {step.step_type === 'SIMULATE' && step.output_data?.results && (
                         <div style={{ marginTop: 8 }}>
-                          <Space size="small" wrap>
-                             <Tag color={step.output_data.metrics.sharpe > 1.2 ? "green" : "orange"}>
-                               SR: {step.output_data.metrics.sharpe?.toFixed(2) || '--'}
-                             </Tag>
-                             <Tag>To: {step.output_data.metrics.turnover?.toFixed(2) || '--'}</Tag>
-                             <Tag>Fit: {step.output_data.metrics.fitness?.toFixed(2) || '--'}</Tag>
-                          </Space>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            模拟结果: {step.output_data.success_count || 0} 成功
+                          </Text>
+                          {step.output_data.results.map((r, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                              <Tag color={r.err ? 'red' : 'blue'} style={{ fontSize: 11 }}>
+                                {r.id || `#${i+1}`}
+                              </Tag>
+                              {r.metrics && (
+                                <Space size="small" wrap>
+                                  <Tag color={r.metrics.sharpe >= 1.2 ? 'green' : (r.metrics.sharpe >= 0 ? 'orange' : 'red')}>
+                                    Sharpe: {r.metrics.sharpe?.toFixed(2) ?? '--'}
+                                  </Tag>
+                                  <Tag>Returns: {(r.metrics.returns * 100)?.toFixed(1) ?? '--'}%</Tag>
+                                  <Tag>Turnover: {r.metrics.turnover?.toFixed(2) ?? '--'}</Tag>
+                                  <Tag>Fitness: {r.metrics.fitness?.toFixed(2) ?? '--'}</Tag>
+                                </Space>
+                              )}
+                              {r.err && <Text type="danger" style={{ fontSize: 11 }}>{r.err}</Text>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* EVALUATE: Show Pass/Fail Details */}
+                      {step.step_type === 'EVALUATE' && step.output_data?.details && (
+                        <div style={{ marginTop: 8 }}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            评估结果: ✅ {step.output_data.pass_count || 0} 通过, ❌ {step.output_data.fail_count || 0} 失败
+                          </Text>
+                          {step.output_data.details.map((d, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                              <Tag color={d.pass ? 'green' : 'red'} style={{ fontSize: 11 }}>
+                                {d.pass ? '✓' : '✗'} {d.id || `#${i+1}`}
+                              </Tag>
+                              <Space size="small" wrap>
+                                <Tag color={d.sharpe >= 1.5 ? 'green' : 'default'}>Sharpe: {d.sharpe?.toFixed(2) ?? '--'}</Tag>
+                                <Tag>Returns: {(d.returns * 100)?.toFixed(1) ?? '--'}%</Tag>
+                                <Tag color={d.turnover <= 0.3 ? 'green' : 'orange'}>Turnover: {d.turnover?.toFixed(2) ?? '--'}</Tag>
+                                <Tag>Fitness: {d.fitness?.toFixed(2) ?? '--'}</Tag>
+                              </Space>
+                            </div>
+                          ))}
                         </div>
                       )}
 

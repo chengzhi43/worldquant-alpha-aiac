@@ -1,242 +1,335 @@
-# AIAC 2.0 - LLM Alpha Generator
+# AIAC 2.0 - Alpha-GPT Mining System
 
-使用 LLM 从研究假设自动生成 WorldQuant Brain Alpha 表达式的完整工具。
+<div align="center">
 
-## 📋 功能特性
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Python](https://img.shields.io/badge/python-3.10+-green)
+![React](https://img.shields.io/badge/react-18.x-61DAFB)
+![License](https://img.shields.io/badge/license-MIT-yellow)
 
-✅ **OpenAI 兼容 API 支持** - 适配所有 OpenAI 兼容的 LLM API  
-✅ **自动 JSON 清理** - 智能处理 markdown 包裹的 JSON 响应  
-✅ **批量模拟** - 使用 `ace.simulate_alpha_list_multi` 并发模拟，效率更高  
-✅ **自动标签** - 为每个 alpha 添加 LLM 标签和经济学描述  
-✅ **错误处理** - 完善的错误处理和进度显示  
+**Human-AI Collaborative Alpha Mining Platform**  
+*基于 Alpha-GPT 范式 + RD-Agent CoSTEER 反馈闘环*
+
+[English](#features) | [中文](#功能特性)
+
+</div>
 
 ---
 
-## 🚀 快速开始
+## 🌟 Overview
 
-### 1. 安装依赖
+AIAC 2.0 是一个基于 **Alpha-GPT** 理念的智能 Alpha 挖掘系统，融合了 **RD-Agent** 的 CoSTEER 反馈闘环机制，实现：
+
+- 🎯 **每日稳定产出 3-4 个合格 Alpha**
+- 🔄 **持续多样性探索**（跨区域、跨数据集）
+- 👁️ **全链路 Trace 可视化**（RD-Agent 风格）
+- 🧠 **知识库自演进**（成功模式 + 失败教训）
+- 🤝 **人机协作**（Human-in-the-Loop 干预）
+
+---
+
+## 📋 Features
+
+### 核心功能
+
+| 模块 | 功能 | 状态 |
+|------|------|------|
+| **Dashboard** | 每日目标进度、KPI 卡片、实时活动流 | ✅ |
+| **Task Management** | 任务创建、启动/暂停、Trace 时间线 | ✅ |
+| **Alpha Lab** | Alpha 列表、详情、人工反馈、**Brain 同步** | ✅ |
+| **Config Center** | 质量门槛、算子偏好、知识库管理 | ✅ |
+| **Mining Agent** | Hierarchical RAG + LLM 生成 | ✅ |
+| **Feedback Loop** | CoSTEER 双循环（自修正 + 知识演进） | ✅ |
+
+### 技术架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Frontend (React + Vite)              │
+│  Dashboard | Tasks | Alpha Lab | Config Center          │
+└─────────────────────────────────────────────────────────┘
+                            │ REST API + SSE
+┌─────────────────────────────────────────────────────────┐
+│                    Backend (FastAPI)                    │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │               Agent Hub                          │    │
+│  │  Mining Agent | Analysis Agent | Feedback Agent │    │
+│  └─────────────────────────────────────────────────┘    │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │            Core Services                         │    │
+│  │  Knowledge Base | Prompt Engine | BRAIN Adapter │    │
+│  │  *Sync Service* | Task Scheduler                │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+                            │
+┌─────────────────────────────────────────────────────────┐
+│                 PostgreSQL Database                     │
+│  mining_tasks | trace_steps | alpha_base | knowledge    │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- Node.js 18+
+- PostgreSQL 14+
+- WorldQuant BRAIN 账号
+
+### 1. Clone & Setup
 
 ```bash
-pip install pandas tabulate openai pydantic
+git clone https://github.com/your-repo/worldquant-alpha-aiac.git
+cd worldquant-alpha-aiac
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Install frontend dependencies
+cd frontend && npm install && cd ..
 ```
 
-### 2. 配置 API 凭证
+### 2. Configure Environment
 
-#### 方法 A：环境变量（推荐）
+复制并编辑 `.env` 文件:
 
 ```bash
-export OPENAI_API_KEY="sk-xxxxxx"
-export OPENAI_BASE_URL="https://api.deepseek.com/v1"
+cp .env.example .env
 ```
 
-#### 方法 B：代码硬编码（仅用于测试）
+```env
+# Database
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_password
+POSTGRES_SERVER=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=alpha_gpt
 
-编辑 `test.py` 第 88-89 行：
+# Brain Platform
+BRAIN_EMAIL=your_email@example.com
+BRAIN_PASSWORD=your_brain_password
 
-```python
-OPENAI_API_KEY = "sk-your-actual-key-here"
-OPENAI_BASE_URL = "https://api.deepseek.com/v1"
+# LLM (OpenAI Compatible)
+OPENAI_API_KEY=sk-xxxxxxxx
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+OPENAI_MODEL=deepseek-chat
 ```
 
-### 3. 运行脚本
+### 3. Initialize Database
 
 ```bash
-python test.py
+# Create database
+psql -U postgres -c "CREATE DATABASE alpha_gpt;"
+
+# Run migrations
+psql -U postgres -d alpha_gpt -f backend/migrations/001_initial_schema.sql
 ```
 
----
+### 4. Start Services
 
-## 📖 代码结构说明
-
-### 核心函数
-
-| 函数名 | 功能 |
-|--------|------|
-| `clean_json_response()` | 清理 LLM 返回的 JSON（去除 markdown 标记） |
-| `call_llm()` | 调用 LLM API，支持所有 OpenAI 兼容接口 |
-| `get_operators_reference()` | 获取 BRAIN 可用操作符列表 |
-| `get_dataset_reference()` | 获取数据集和字段信息 |
-| `generate_alpha_expressions()` | 基于研究假设生成 alpha 表达式 |
-| `simulate_alphas_batch()` | 批量模拟 alpha 表达式 (使用 `ace.simulate_alpha_list_multi`) |
-| `add_llm_tags_and_descriptions()` | 添加 LLM 标签和描述 |
-
-### 工作流程
-
-```
-1. 验证 API 凭证
-   ↓
-2. 加载操作符和数据集参考
-   ↓
-3. 定义研究假设
-   ↓
-4. 调用 LLM 生成 alpha 表达式
-   ↓
-5. 批量模拟表达式
-   ↓
-6. 添加 LLM 标签和描述
-   ↓
-7. 导出到 alphas.json
-```
-
----
-
-## 🔧 关键修改点
-
-### 从 OpenAI Structured Outputs 到兼容模式
-
-**原始代码问题：**
-```python
-# ❌ 不兼容大部分 API
-completion = client.chat.completions.parse(
-    response_format=output_structure
-)
-```
-
-**修复后代码：**
-```python
-# ✅ 兼容所有 OpenAI 兼容 API
-completion = client.chat.completions.create(
-    response_format={"type": "json_object"}
-)
-raw_content = completion.choices[0].message.content
-cleaned_content = clean_json_response(raw_content)
-llm_structured_output = output_structure.model_validate_json(cleaned_content)
-```
-
-### JSON 清理功能
-
-处理模型返回的各种格式：
-
-```python
-# 输入：
-"""
-```json
-{
-  "alphas": [...]
-}
-```
-"""
-
-# 输出：纯净的 JSON 字符串
-{"alphas": [...]}
-```
-
----
-
-## 📝 自定义配置
-
-### 修改研究假设
-
-编辑 `test.py` 第 409 行：
-
-```python
-hypothesis = "Your research idea here"
-```
-
-### 修改模拟参数
-
-编辑 `test.py` 第 426-434 行：
-
-```python
-alpha_dicts = simulate_alphas_batch(
-    alpha_dicts, 
-    s,
-    region="USA",           # 市场区域
-    universe="TOP1000",     # 股票池
-    delay=1,                # 延迟
-    neutralization="SECTOR", # 中性化方式
-    decay=4,                # 衰减
-    truncation=0.02,        # 截断
-    test_period="P2Y"       # 测试周期
-)
-```
-
-### 修改 LLM 标签
-
-编辑 `test.py` 第 442 行，根据你使用的 LLM 修改标签：
-
-```python
-llm_tag="DEEPSEEK"  # 可选：GPT4, CLAUDE, GEMINI 等
-```
-
----
-
-## 🐛 常见问题
-
-### 1. API Key 错误
-
-**错误：** `OpenAIError: The api_key client option must be set`
-
-**解决：**
+**Terminal 1 - Backend:**
 ```bash
-export OPENAI_API_KEY="your-api-key"
-export OPENAI_BASE_URL="your-base-url"
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
-### 2. JSON 解析错误
+**Terminal 2 - Frontend:**
+```bash
+cd frontend
+npm run dev
+```
 
-**错误：** `ValidationError: Invalid JSON: expected value at line 1`
-
-**原因：** 模型返回了 markdown 包裹的 JSON
-
-**解决：** 代码已自动处理，如果仍有问题，检查 `clean_json_response()` 函数
-
-### 3. 模拟失败
-
-**原因：** 
-- Alpha 表达式语法错误
-- 使用了不存在的字段
-- 模拟参数不匹配
-
-**解决：** 查看错误日志，调整 prompt 或模拟参数
+**Access:**
+- Frontend: http://localhost:5174
+- API Docs: http://localhost:8001/docs
+- API: http://localhost:8001/api/v1
 
 ---
 
-## 📊 输出格式
+## 📁 Project Structure
 
-最终输出 `alphas.json`，包含以下字段：
-
-```json
-[
-  {
-    "alpha_expression": "rank(multiply(ts_delta(mdl110_growth, 20), ...))",
-    "economic_rationale": "Captures short-term momentum...",
-    "data_fields_used": ["mdl110_growth"],
-    "operators_used": ["rank", "multiply", "ts_delta"],
-    "simulation": {
-      "alpha_id": "12345678",
-      ...
-    },
-    "simulation_status": "success",
-    "llm_tag": "DEEPSEEK",
-    "description_added": true
-  }
-]
+```
+worldquant-alpha-aiac/
+├── backend/
+│   ├── main.py                 # FastAPI 应用入口
+│   ├── config.py               # 配置管理
+│   ├── database.py             # 数据库连接
+│   ├── models.py               # SQLAlchemy 模型
+│   ├── routers/
+│   │   ├── dashboard.py        # 统计 & Live Feed
+│   │   ├── tasks.py            # 任务管理 & Trace
+│   │   ├── alphas.py           # Alpha 管理 & 反馈
+│   │   └── knowledge.py        # 知识库管理
+│   ├── services/
+│   │   ├── mining_service.py   # 挖掘服务
+│   │   └── analysis_service.py # 分析服务
+│   ├── agents/
+│   │   ├── mining_agent.py     # Mining Agent
+│   │   ├── feedback_agent.py   # Feedback Agent
+│   │   └── prompts.py          # Prompt 模板
+│   ├── adapters/
+│   │   └── brain_adapter.py    # BRAIN API 封装
+│   └── migrations/
+│       └── 001_initial_schema.sql
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── main.jsx
+│   │   ├── index.css           # 暗色主题
+│   │   ├── components/
+│   │   │   ├── AppSidebar.jsx
+│   │   │   └── AppHeader.jsx
+│   │   ├── pages/
+│   │   │   ├── Dashboard.jsx
+│   │   │   ├── TaskManagement.jsx
+│   │   │   ├── TaskDetail.jsx
+│   │   │   ├── AlphaLab.jsx
+│   │   │   ├── AlphaDetail.jsx
+│   │   │   └── ConfigCenter.jsx
+│   │   └── services/
+│   │       └── api.js
+│   ├── package.json
+│   └── vite.config.js
+├── data/
+│   ├── 需求说明文档.md
+│   ├── 详细设计说明文档.md
+│   └── ui_design_spec.md
+├── requirements.txt
+├── docker-compose.yml
+└── README.md
 ```
 
 ---
 
-## 🎯 支持的 LLM 供应商
+## 🔧 API Reference
 
-只要支持 OpenAI 兼容协议，都可以使用：
+### Dashboard
 
-| 供应商 | Base URL 示例 |
-|--------|---------------|
-| DeepSeek | `https://api.deepseek.com/v1` |
-| 硅基流动 | `https://api.siliconflow.cn/v1` |
-| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| 月之暗面 | `https://api.moonshot.cn/v1` |
-| OpenAI | `https://api.openai.com/v1` |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/stats/daily` | GET | 今日挖掘统计 |
+| `/api/v1/stats/kpi` | GET | KPI 指标 |
+| `/api/v1/stats/live-feed` | GET | SSE 实时活动流 |
+
+### Tasks
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/tasks` | GET | 任务列表 |
+| `/api/v1/tasks` | POST | 创建任务 |
+| `/api/v1/tasks/{id}` | GET | 任务详情 (含 Trace) |
+| `/api/v1/tasks/{id}/trace` | GET | 完整 Trace 时间线 |
+| `/api/v1/tasks/{id}/start` | POST | 启动任务 |
+| `/api/v1/tasks/{id}/intervene` | POST | 人工干预 (暂停/跳过/调整) |
+
+### Alphas
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/alphas` | GET | Alpha 列表 |
+| `/api/v1/alphas/sync` | POST | 同步 Brain 平台 Alpha |
+| `/api/v1/alphas/{id}` | GET | Alpha 详情 |
+| `/api/v1/alphas/{id}/feedback` | POST | 提交人工反馈 |
+
+### Knowledge
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/knowledge` | GET | 知识库条目 |
+| `/api/v1/knowledge/success-patterns` | GET | 成功模式 |
+| `/api/v1/knowledge/failure-pitfalls` | GET | 失败教训 |
 
 ---
 
-## 📞 支持
+## 🐳 Docker Deployment
 
-如有问题，请参考：
-- ACE Library 文档
-- WorldQuant BRAIN FAQ
-- Competition Guidelines
+```bash
+# Build and run
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop
+docker-compose down
+```
 
 ---
 
-**Good luck with AIAC 2.0! 🚀**
+## 📊 Key Concepts
+
+### Trace Visualization (RD-Agent Style)
+
+每个挖掘任务的步骤完全透明：
+
+```
+Step 1: RAG_QUERY → 检索成功模式
+Step 2: HYPOTHESIS → 生成投资假设
+Step 3: CODE_GEN → 生成 Alpha 表达式
+Step 4: VALIDATE → 语法校验
+Step 5: SIMULATE → BRAIN 模拟
+Step 6: EVALUATE → 质量评估
+```
+
+### CoSTEER Feedback Loop
+
+**短循环** (单任务内):
+```
+生成 → 模拟 → 失败 → Self-Correction → 重试
+```
+
+**长循环** (跨任务):
+```
+失败样本 → 聚类归因 → 更新知识库 → 优化 Prompt
+```
+
+### Human-in-the-Loop
+
+- 任意步骤可暂停/调整
+- 👍/👎 反馈直接影响知识库
+- 交互模式：每步确认
+
+---
+
+## 📈 Roadmap
+
+- [x] Phase 1: 基础骨架 (Backend + Frontend + DB)
+- [x] Phase 2: Trace 可视化 + Mining Agent 核心
+- [x] Phase 3: Brain 平台同步与集成
+- [ ] Phase 4: Celery 异步任务队列优化
+- [ ] Phase 5: 多区域并行挖掘
+- [ ] Phase 6: 高级分析仪表盘
+
+---
+
+## 🤝 Contributing
+
+欢迎贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+---
+
+## 📄 License
+
+MIT License - See [LICENSE](LICENSE) for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- [Alpha-GPT Paper](https://arxiv.org/abs/xxxx) - Human-AI Interaction Paradigm
+- [RD-Agent](https://github.com/microsoft/RD-Agent) - CoSTEER Feedback Loop
+- [WorldQuant BRAIN](https://platform.worldquantbrain.com) - Alpha Simulation Platform
+
+---
+
+<div align="center">
+
+**Built with ❤️ for Quantitative Research**
+
+</div>

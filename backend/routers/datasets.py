@@ -21,15 +21,16 @@ router = APIRouter(
 
 class DatasetResponse(BaseModel):
     dataset_id: str
+    name: Optional[str] = None
     region: str
     universe: str
     category: Optional[str] = None
     subcategory: Optional[str] = None
     description: Optional[str] = None
-    field_count: int
-    alpha_success_count: int
-    alpha_fail_count: int
-    mining_weight: float
+    field_count: int = 0
+    alpha_success_count: int = 0
+    alpha_fail_count: int = 0
+    mining_weight: float = 1.0
     last_synced_at: Optional[datetime] = None
     # New fields
     date_coverage: Optional[float] = None
@@ -100,15 +101,16 @@ async def list_datasets(
     
     results_list = [DatasetResponse(
         dataset_id=d.dataset_id,
+        name=d.name,
         region=d.region,
         universe=d.universe,
         category=d.category,
         subcategory=d.subcategory,
         description=d.description,
-        field_count=d.field_count,
-        alpha_success_count=d.alpha_success_count,
-        alpha_fail_count=d.alpha_fail_count,
-        mining_weight=d.mining_weight,
+        field_count=d.field_count or 0,
+        alpha_success_count=d.alpha_success_count or 0,
+        alpha_fail_count=d.alpha_fail_count or 0,
+        mining_weight=d.mining_weight or 1.0,
         last_synced_at=d.last_synced_at,
         # New fields
         date_coverage=d.date_coverage,

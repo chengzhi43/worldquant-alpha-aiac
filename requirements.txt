@@ -47,3 +47,6 @@ httpx>=0.26.0
 
 # Logging
 loguru>=0.7.2
+
+# Security
+cryptography>=41.0.0

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   Row, 
@@ -13,18 +14,33 @@ import {
   Space,
   InputNumber,
   Form,
+  Input,
   message,
+  Alert,
+  Spin,
+  Tooltip,
+  Divider,
 } from 'antd'
 import {
   SettingOutlined,
   SaveOutlined,
+  KeyOutlined,
+  CloudOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  SyncOutlined,
+  EyeInvisibleOutlined,
+  EyeTwoTone,
+  ApiOutlined,
 } from '@ant-design/icons'
 import api from '../services/api'
 
-const { Title, Text } = Typography
+const { Title, Text, Paragraph } = Typography
 
 export default function ConfigCenter() {
   const queryClient = useQueryClient()
+  const [brainForm] = Form.useForm()
+  const [llmForm] = Form.useForm()
 
   // Fetch knowledge entries
   const { data: successPatterns, isLoading: patternsLoading } = useQuery({
@@ -35,6 +51,47 @@ export default function ConfigCenter() {
   const { data: failurePitfalls, isLoading: pitfallsLoading } = useQuery({
     queryKey: ['knowledge', 'failure-pitfalls'],
     queryFn: () => api.getFailurePitfalls(30),
+  })
+
+  // Fetch credentials status
+  const { data: credentialsData, isLoading: credentialsLoading, refetch: refetchCredentials } = useQuery({
+    queryKey: ['credentials'],
+    queryFn: api.getCredentialsStatus,
+  })
+
+  // Mutations for credentials
+  const saveBrainCredentialsMutation = useMutation({
+    mutationFn: ({ email, password }) => api.setBrainCredentials(email, password),
+    onSuccess: () => {
+      message.success('Brain 平台凭证保存成功')
+      refetchCredentials()
+      brainForm.resetFields()
+    },
+    onError: (error) => {
+      message.error(`保存失败: ${error.response?.data?.detail || error.message}`)
+    },
+  })
+
+  const saveLLMCredentialsMutation = useMutation({
+    mutationFn: ({ apiKey, baseUrl, model }) => api.setLLMCredentials(apiKey, baseUrl, model),
+    onSuccess: () => {
+      message.success('LLM API 凭证保存成功')
+      refetchCredentials()
+      llmForm.resetFields()
+    },
+    onError: (error) => {
+      message.error(`保存失败: ${error.response?.data?.detail || error.message}`)
+    },
+  })
+
+  const testBrainCredentialsMutation = useMutation({
+    mutationFn: api.testBrainCredentials,
+    onSuccess: () => {
+      message.success('Brain 平台连接测试成功！')
+    },
+    onError: (error) => {
+      message.error(`连接测试失败: ${error.response?.data?.detail || error.message}`)
+    },
   })
 
   const knowledgeColumns = [
@@ -78,7 +135,256 @@ export default function ConfigCenter() {
     },
   ]
 
+  // Credentials tab content
+  const CredentialsTab = () => {
+    const credentials = credentialsData?.credentials || {}
+
+    const renderCredentialStatus = (key, label) => {
+      const cred = credentials[key] || {}
+      const isSet = cred.is_set
+      const source = cred.source
+      
+      return (
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center',
+          padding: '8px 0',
+          borderBottom: '1px solid rgba(255,255,255,0.1)'
+        }}>
+          <Text>{label}</Text>
+          <Space>
+            {isSet ? (
+              <>
+                <Text type="secondary" style={{ fontFamily: 'monospace' }}>
+                  {cred.masked}
+                </Text>
+                {source === 'env' && (
+                  <Tooltip title="从环境变量读取">
+                    <Tag color="blue">ENV</Tag>
+                  </Tooltip>
+                )}
+                <CheckCircleOutlined style={{ color: '#52c41a' }} />
+              </>
+            ) : (
+              <>
+                <Text type="secondary">(未配置)</Text>
+                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+              </>
+            )}
+          </Space>
+        </div>
+      )
+    }
+
+    return (
+      <Row gutter={24}>
+        {/* Brain Platform Credentials */}
+        <Col xs={24} lg={12}>
+          <Card 
+            className="glass-card" 
+            title={
+              <Space>
+                <CloudOutlined style={{ color: '#00d4ff' }} />
+                <span>WorldQuant Brain 平台</span>
+              </Space>
+            }
+          >
+            <Alert
+              message="Brain 平台凭证"
+              description="用于连接 WorldQuant Brain 平台进行 Alpha 模拟和数据同步。"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+
+            {credentialsLoading ? (
+              <Spin />
+            ) : (
+              <div style={{ marginBottom: 24 }}>
+                <Title level={5}>当前状态</Title>
+                {renderCredentialStatus('brain_email', '邮箱')}
+                {renderCredentialStatus('brain_password', '密码')}
+              </div>
+            )}
+
+            <Divider />
+
+            <Title level={5}>更新凭证</Title>
+            <Form
+              form={brainForm}
+              layout="vertical"
+              onFinish={(values) => {
+                saveBrainCredentialsMutation.mutate(values)
+              }}
+            >
+              <Form.Item
+                name="email"
+                label="Brain 平台邮箱"
+                rules={[
+                  { required: true, message: '请输入邮箱' },
+                  { type: 'email', message: '请输入有效的邮箱地址' }
+                ]}
+              >
+                <Input 
+                  prefix={<KeyOutlined />} 
+                  placeholder="your-email@example.com" 
+                />
+              </Form.Item>
+
+              <Form.Item
+                name="password"
+                label="Brain 平台密码"
+                rules={[{ required: true, message: '请输入密码' }]}
+              >
+                <Input.Password 
+                  prefix={<KeyOutlined />}
+                  placeholder="输入密码"
+                  iconRender={(visible) => (visible ? <EyeTwoTone /> : <EyeInvisibleOutlined />)}
+                />
+              </Form.Item>
+
+              <Form.Item>
+                <Space>
+                  <Button 
+                    type="primary" 
+                    htmlType="submit"
+                    icon={<SaveOutlined />}
+                    loading={saveBrainCredentialsMutation.isPending}
+                  >
+                    保存凭证
+                  </Button>
+                  <Button 
+                    icon={<SyncOutlined />}
+                    onClick={() => testBrainCredentialsMutation.mutate()}
+                    loading={testBrainCredentialsMutation.isPending}
+                  >
+                    测试连接
+                  </Button>
+                </Space>
+              </Form.Item>
+            </Form>
+          </Card>
+        </Col>
+
+        {/* LLM API Credentials */}
+        <Col xs={24} lg={12}>
+          <Card 
+            className="glass-card"
+            title={
+              <Space>
+                <ApiOutlined style={{ color: '#00d4ff' }} />
+                <span>LLM API 配置</span>
+              </Space>
+            }
+          >
+            <Alert
+              message="大语言模型 API"
+              description="支持 OpenAI、DeepSeek、智谱等兼容 OpenAI 协议的 API 服务。"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+
+            {credentialsLoading ? (
+              <Spin />
+            ) : (
+              <div style={{ marginBottom: 24 }}>
+                <Title level={5}>当前状态</Title>
+                {renderCredentialStatus('openai_api_key', 'API Key')}
+                {renderCredentialStatus('openai_base_url', 'Base URL')}
+                {renderCredentialStatus('openai_model', '模型')}
+              </div>
+            )}
+
+            <Divider />
+
+            <Title level={5}>更新配置</Title>
+            <Form
+              form={llmForm}
+              layout="vertical"
+              initialValues={{
+                baseUrl: 'https://api.deepseek.com/v1',
+                model: 'deepseek-chat'
+              }}
+              onFinish={(values) => {
+                saveLLMCredentialsMutation.mutate({
+                  apiKey: values.apiKey,
+                  baseUrl: values.baseUrl,
+                  model: values.model
+                })
+              }}
+            >
+              <Form.Item
+                name="apiKey"
+                label="API Key"
+                rules={[{ required: true, message: '请输入 API Key' }]}
+              >
+                <Input.Password 
+                  prefix={<KeyOutlined />}
+                  placeholder="sk-xxxxxxxxxxxxxxxx"
+                  iconRender={(visible) => (visible ? <EyeTwoTone /> : <EyeInvisibleOutlined />)}
+                />
+              </Form.Item>
+
+              <Form.Item
+                name="baseUrl"
+                label="Base URL"
+                rules={[{ required: true, message: '请输入 Base URL' }]}
+              >
+                <Input 
+                  placeholder="https://api.deepseek.com/v1" 
+                />
+              </Form.Item>
+
+              <Form.Item
+                name="model"
+                label="模型名称"
+                rules={[{ required: true, message: '请输入模型名称' }]}
+              >
+                <Input 
+                  placeholder="deepseek-chat" 
+                />
+              </Form.Item>
+
+              <Form.Item>
+                <Button 
+                  type="primary" 
+                  htmlType="submit"
+                  icon={<SaveOutlined />}
+                  loading={saveLLMCredentialsMutation.isPending}
+                >
+                  保存配置
+                </Button>
+              </Form.Item>
+            </Form>
+
+            <Paragraph type="secondary" style={{ marginTop: 16 }}>
+              <Text strong>常用 API 地址:</Text>
+              <ul style={{ marginTop: 8 }}>
+                <li>DeepSeek: https://api.deepseek.com/v1</li>
+                <li>OpenAI: https://api.openai.com/v1</li>
+                <li>智谱: https://open.bigmodel.cn/api/paas/v4</li>
+                <li>Moonshot: https://api.moonshot.cn/v1</li>
+              </ul>
+            </Paragraph>
+          </Card>
+        </Col>
+      </Row>
+    )
+  }
+
   const tabs = [
+    {
+      key: 'credentials',
+      label: (
+        <Space>
+          <KeyOutlined />
+          凭证管理
+        </Space>
+      ),
+      children: <CredentialsTab />,
+    },
     {
       key: 'thresholds',
       label: '质量阈值',
@@ -253,7 +559,7 @@ export default function ConfigCenter() {
         配置中心
       </Title>
 
-      <Tabs items={tabs} size="large" />
+      <Tabs items={tabs} size="large" defaultActiveKey="credentials" />
     </div>
   )
 }

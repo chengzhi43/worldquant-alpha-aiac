@@ -170,6 +170,36 @@ const api = {
     const { data } = await client.put('/config/thresholds', thresholds)
     return data
   },
+
+  // Credentials Management
+  getCredentialsStatus: async () => {
+    const { data } = await client.get('/config/credentials')
+    return data
+  },
+
+  setBrainCredentials: async (email, password) => {
+    const { data } = await client.post('/config/credentials/brain', { email, password })
+    return data
+  },
+
+  setLLMCredentials: async (apiKey, baseUrl, model) => {
+    const { data } = await client.post('/config/credentials/llm', { 
+      api_key: apiKey, 
+      base_url: baseUrl, 
+      model 
+    })
+    return data
+  },
+
+  testBrainCredentials: async () => {
+    const { data } = await client.post('/config/credentials/brain/test')
+    return data
+  },
+
+  deleteCredential: async (key) => {
+    const { data } = await client.delete(`/config/credentials/${key}`)
+    return data
+  },
 }
 
 export default api

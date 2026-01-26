@@ -17,10 +17,22 @@ from backend.agents.graph.state import (
 from backend.agents.services import LLMService, RAGService, get_llm_service
 from backend.agents.services.trace_service import TraceService, TraceStepRecord
 from backend.agents.prompts import (
-    ALPHA_GENERATION_SYSTEM, ALPHA_GENERATION_USER,
-    HYPOTHESIS_SYSTEM, HYPOTHESIS_USER,
-    SELF_CORRECT_SYSTEM, SELF_CORRECT_USER,
-    DISTILL_SYSTEM, DISTILL_USER
+    # System prompts
+    ALPHA_GENERATION_SYSTEM,
+    HYPOTHESIS_SYSTEM,
+    DISTILL_SYSTEM,
+    SELF_CORRECT_SYSTEM,
+    # Legacy user templates (for backward compatibility)
+    ALPHA_GENERATION_USER,
+    HYPOTHESIS_USER,
+    DISTILL_USER,
+    SELF_CORRECT_USER,
+    # New builder functions (preferred)
+    build_alpha_generation_prompt,
+    build_hypothesis_prompt,
+    build_distill_prompt,
+    build_self_correct_prompt,
+    PromptContext,
 )
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.config import settings
@@ -372,63 +384,79 @@ async def node_hypothesis(state: MiningState, llm_service: LLMService, config: R
 
 
 # =============================================================================
-# NODE: Code Generation
+# NODE: Code Generation (Strategy-Aware)
 # =============================================================================
 
 async def node_code_gen(state: MiningState, llm_service: LLMService, config: RunnableConfig = None) -> Dict:
     """
-    Generate Alpha expressions using LLM.
+    Generate Alpha expressions using LLM with strategy context.
+    
+    Now supports:
+    - Strategy-driven temperature and exploration weight
+    - Preferred/avoided fields from evolution strategy
+    - Focus hypotheses and avoid patterns from feedback
     
     Input State:
         - dataset_id, fields, operators, patterns, pitfalls
+        
+    Config:
+        - strategy: Evolution strategy dict with exploration parameters
     
     Output Updates:
         - pending_alphas
         - trace_steps
     """
+    from backend.agents.prompts import PromptContext, build_alpha_generation_prompt
+    
     start_time = time.time()
     node_name = "CODE_GEN"
     
-    # Extract TraceService
+    # Extract services from config
     trace_service = config.get("configurable", {}).get("trace_service") if config else None
+    strategy_dict = config.get("configurable", {}).get("strategy", {}) if config else {}
     
-    logger.info(f"[{node_name}] 开始执行 | task={state.task_id}")
+    # Extract strategy parameters with defaults
+    temperature = strategy_dict.get("temperature", 0.7)
+    exploration_weight = strategy_dict.get("exploration_weight", 0.5)
+    preferred_fields = strategy_dict.get("preferred_fields", [])
+    avoid_fields = strategy_dict.get("avoid_fields", [])
+    focus_hypotheses = strategy_dict.get("focus_hypotheses", [])
+    avoid_patterns = strategy_dict.get("avoid_patterns", [])
     
-    # Prepare few-shot examples
-    few_shot_text = "\n".join([
-        f"- {p['pattern']}: {p.get('description', '')}"
-        for p in state.patterns
-    ]) or "暂无成功模式参考"
+    logger.info(
+        f"[{node_name}] Starting | task={state.task_id} "
+        f"temp={temperature:.2f} explore={exploration_weight:.2f}"
+    )
     
-    # Prepare constraints
-    constraints_text = "\n".join([
-        f"- 避免: {p['pattern']} (原因: {p.get('description', '')})"
-        for p in state.pitfalls
-    ]) or "暂无特殊限制"
-    
-    # Prepare hypotheses context
-    hypotheses_text = "\n".join([
-        f"ID {i+1}: {h.get('idea', h) if isinstance(h, dict) else h}" 
-        for i, h in enumerate(state.hypotheses)
-    ]) or "暂无特定假设"
-
-    prompt = ALPHA_GENERATION_USER.format(
+    # Build structured prompt context
+    prompt_context = PromptContext(
+        dataset_id=state.dataset_id,
+        dataset_description=state.dataset_description or "",
+        dataset_category=state.dataset_category or "",
         region=state.region,
         universe=state.universe,
-        dataset_id=state.dataset_id,
-        dataset_description="",
-        fields_json=json.dumps(state.fields[:30], ensure_ascii=False),
-        operators_json=json.dumps(state.operators[:50], ensure_ascii=False),
-        few_shot_examples=few_shot_text,
-        hypotheses_context=hypotheses_text,
-        negative_constraints=constraints_text,
-        num_alphas=state.num_alphas_target
+        fields=state.focused_fields if state.focused_fields else state.fields[:30],
+        operators=state.operators[:50],
+        success_patterns=state.patterns[:5],
+        failure_pitfalls=state.pitfalls[:5],
+        preferred_fields=preferred_fields,
+        avoid_fields=avoid_fields,
+        focus_hypotheses=focus_hypotheses + [
+            h.get("idea", str(h)) if isinstance(h, dict) else str(h)
+            for h in state.hypotheses[:3]
+        ],
+        avoid_patterns=avoid_patterns,
+        num_alphas=state.num_alphas_target,
+        exploration_weight=exploration_weight,
     )
+    
+    # Build prompt using new system
+    prompt = build_alpha_generation_prompt(prompt_context)
     
     response = await llm_service.call(
         system_prompt=ALPHA_GENERATION_SYSTEM,
         user_prompt=prompt,
-        temperature=0.8,
+        temperature=temperature,  # Use strategy-driven temperature
         json_mode=True
     )
     
@@ -439,29 +467,36 @@ async def node_code_gen(state: MiningState, llm_service: LLMService, config: Run
     if response.success and response.parsed:
         raw_alphas = response.parsed.get("alphas", [])
         for alpha_data in raw_alphas:
-            # Capture hypothesis_id if available to link back
-            h_id = alpha_data.get("hypothesis_id")
-            hypothesis_text = alpha_data.get("hypothesis")
+            # Extract all available metadata
+            hypothesis_text = alpha_data.get("hypothesis", "")
+            explanation = alpha_data.get("explanation", "")
+            key_fields = alpha_data.get("key_fields", [])
+            complexity = alpha_data.get("complexity", "medium")
             
-            # If ID is present, prepend to hypothesis text for visibility
-            final_hypothesis = hypothesis_text
-            if h_id:
-                final_hypothesis = f"[H{h_id}] {hypothesis_text}"
-                
             candidate = AlphaCandidate(
                 expression=alpha_data.get("expression", ""),
-                hypothesis=final_hypothesis,
-                explanation=alpha_data.get("explanation"),
+                hypothesis=hypothesis_text,
+                explanation=explanation,
                 expected_sharpe=alpha_data.get("expected_sharpe")
             )
-            if candidate.expression:
+            
+            # Only add if expression is valid
+            if candidate.expression and candidate.expression.strip():
                 pending_alphas.append(candidate)
     
-    logger.info(f"[{node_name}] 完成 | alphas={len(pending_alphas)}")
+    logger.info(f"[{node_name}] Complete | alphas={len(pending_alphas)}")
     
     trace_update = await record_trace(
         state, trace_service, node_name,
-        {"num_alphas_target": state.num_alphas_target},
+        {
+            "num_alphas_target": state.num_alphas_target,
+            "strategy": {
+                "temperature": temperature,
+                "exploration_weight": exploration_weight,
+                "preferred_fields_count": len(preferred_fields),
+                "avoid_fields_count": len(avoid_fields),
+            }
+        },
         {
             "alphas_generated": len(pending_alphas),
             "expressions": [a.expression[:200] for a in pending_alphas]
@@ -779,20 +814,27 @@ async def node_simulate(state: MiningState, brain: BrainAdapter, config: Runnabl
 
 
 # =============================================================================
-# NODE: Evaluate Quality
+# NODE: Evaluate Quality (Multi-Objective Scoring)
 # =============================================================================
 
 async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Dict:
     """
-    Batch evaluate alpha quality against thresholds for all simulated alphas.
+    Evaluate alpha quality using multi-objective scoring.
+    
+    Replaces simple threshold-based evaluation with composite scoring that:
+    1. Weights multiple metrics (Sharpe, Fitness, Turnover)
+    2. Penalizes high correlation and poor investability
+    3. Identifies optimization candidates (weak but promising)
     
     Input State:
-        - pending_alphas
+        - pending_alphas (with simulation results)
     
     Output Updates:
-        - pending_alphas (with quality_status)
+        - pending_alphas (with quality_status and score)
         - trace_steps
     """
+    from alpha_scoring import calculate_alpha_score, should_optimize, get_failed_tests
+    
     start_time = time.time()
     node_name = "EVALUATE"
     
@@ -801,12 +843,16 @@ async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Di
     updated_alphas = state.pending_alphas.copy()
     pass_count = 0
     fail_count = 0
+    optimize_count = 0
     
-    logger.info(f"[{node_name}] 开始批量评估 | count={len(state.pending_alphas)}")
+    logger.info(f"[{node_name}] Starting multi-objective evaluation | count={len(state.pending_alphas)}")
     
+    # Configurable thresholds
     sharpe_min = getattr(settings, 'SHARPE_MIN', 1.5)
     turnover_max = getattr(settings, 'TURNOVER_MAX', 0.7)
     fitness_min = getattr(settings, 'FITNESS_MIN', 0.6)
+    score_pass_threshold = getattr(settings, 'SCORE_PASS_THRESHOLD', 0.8)
+    score_optimize_threshold = getattr(settings, 'SCORE_OPTIMIZE_THRESHOLD', 0.3)
     
     eval_details = []
     
@@ -814,34 +860,81 @@ async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Di
         # Skip if not simulated successfully
         if not alpha.is_simulated or not alpha.simulation_success:
             if alpha.quality_status == "PENDING":
-                 alpha.quality_status = "FAIL" # Mark as fail if it failed valid/sim steps
+                alpha.quality_status = "FAIL"
             continue
-            
-        metrics = alpha.metrics or {}
-        sharpe = metrics.get("sharpe") or 0
-        turnover = metrics.get("turnover") or 0
-        fitness = metrics.get("fitness") or 0
         
-        quality_pass = (
+        metrics = alpha.metrics or {}
+        
+        # Build simulation result dict for scoring
+        sim_result = {
+            "train": {
+                "sharpe": metrics.get("sharpe", 0),
+                "fitness": metrics.get("fitness", 0),
+                "turnover": metrics.get("turnover", 0),
+                "returns": metrics.get("returns", 0),
+            },
+            "test": {
+                "sharpe": metrics.get("test_sharpe", metrics.get("sharpe", 0) * 0.8),
+                "fitness": metrics.get("test_fitness", metrics.get("fitness", 0)),
+            },
+            "riskNeutralized": metrics.get("riskNeutralized", {}),
+            "investabilityConstrained": metrics.get("investabilityConstrained", {}),
+        }
+        
+        # Calculate composite score
+        score = calculate_alpha_score(
+            sim_result=sim_result,
+            prod_corr=0.0,  # TODO: Integrate correlation check
+            self_corr=0.0
+        )
+        
+        # Get optimization recommendation
+        should_opt, opt_reason = should_optimize(sim_result)
+        failed_tests = get_failed_tests(sim_result)
+        
+        # Extract key metrics for threshold check
+        sharpe = metrics.get("sharpe", 0) or 0
+        turnover = metrics.get("turnover", 0) or 0
+        fitness = metrics.get("fitness", 0) or 0
+        
+        # Determine quality status using hybrid approach:
+        # 1. If meets all thresholds OR score > pass_threshold -> PASS
+        # 2. If should optimize and score > optimize_threshold -> OPTIMIZE
+        # 3. Otherwise -> FAIL
+        
+        meets_thresholds = (
             sharpe >= sharpe_min and
             turnover <= turnover_max and
             fitness >= fitness_min
         )
         
-        alpha.quality_status = "PASS" if quality_pass else "FAIL"
-        
-        if quality_pass:
+        if meets_thresholds or score >= score_pass_threshold:
+            alpha.quality_status = "PASS"
             pass_count += 1
+        elif should_opt and score >= score_optimize_threshold:
+            alpha.quality_status = "OPTIMIZE"
+            optimize_count += 1
         else:
+            alpha.quality_status = "FAIL"
             fail_count += 1
-            
+        
+        # Store score and optimization info in metrics for later use
+        alpha.metrics = {
+            **metrics,
+            "_score": round(score, 4),
+            "_should_optimize": should_opt,
+            "_optimize_reason": opt_reason,
+            "_failed_tests": failed_tests,
+        }
+        
         eval_details.append({
             "id": alpha.alpha_id,
-            "pass": quality_pass,
+            "status": alpha.quality_status,
+            "score": round(score, 4),
             "sharpe": sharpe,
-            "returns": metrics.get("returns"),
-            "turnover": turnover,
             "fitness": fitness,
+            "turnover": turnover,
+            "optimize_reason": opt_reason if should_opt else None,
         })
         
         updated_alphas[i] = alpha
@@ -849,13 +942,26 @@ async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Di
     duration_ms = int((time.time() - start_time) * 1000)
     
     logger.info(
-        f"[{node_name}] 完成 | pass={pass_count} fail={fail_count}"
+        f"[{node_name}] Complete | pass={pass_count} optimize={optimize_count} fail={fail_count}"
     )
     
     trace_update = await record_trace(
         state, trace_service, node_name,
-        {"thresholds": f"SR>{sharpe_min}, TO<{turnover_max}"},
-        {"pass_count": pass_count, "fail_count": fail_count, "details": eval_details},
+        {
+            "evaluation_mode": "multi_objective",
+            "thresholds": {
+                "sharpe_min": sharpe_min,
+                "turnover_max": turnover_max,
+                "fitness_min": fitness_min,
+                "score_pass": score_pass_threshold,
+            }
+        },
+        {
+            "pass_count": pass_count,
+            "optimize_count": optimize_count,
+            "fail_count": fail_count,
+            "details": eval_details
+        },
         duration_ms,
         "SUCCESS"
     )

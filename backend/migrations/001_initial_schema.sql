@@ -1,11 +1,249 @@
--- AIAC 2.0 Unified Database Schema
--- Merged from create_table.sql and original agent schema
+-- DROP SCHEMA public;
 
--- =====================================================================
--- PART 1: CORE SCHEMA (Reference create_table.sql)
--- =====================================================================
+CREATE SCHEMA public AUTHORIZATION pg_database_owner;
 
-CREATE TABLE IF NOT EXISTS public.alpha_pnl (
+COMMENT ON SCHEMA public IS 'standard public schema';
+
+-- DROP SEQUENCE public.alpha_base_id_seq;
+
+CREATE SEQUENCE public.alpha_base_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.alpha_failures_id_seq;
+
+CREATE SEQUENCE public.alpha_failures_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.alpha_pnl_id_seq;
+
+CREATE SEQUENCE public.alpha_pnl_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.alphas_id_seq;
+
+CREATE SEQUENCE public.alphas_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.datafields_id_seq;
+
+CREATE SEQUENCE public.datafields_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.datasets_id_seq;
+
+CREATE SEQUENCE public.datasets_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.generation_tasks_id_seq;
+
+CREATE SEQUENCE public.generation_tasks_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.knowledge_entries_id_seq;
+
+CREATE SEQUENCE public.knowledge_entries_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.llm_providers_id_seq;
+
+CREATE SEQUENCE public.llm_providers_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.mining_tasks_id_seq;
+
+CREATE SEQUENCE public.mining_tasks_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.neutralizations_id_seq;
+
+CREATE SEQUENCE public.neutralizations_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.operation_logs_id_seq;
+
+CREATE SEQUENCE public.operation_logs_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.operator_blacklist_id_seq;
+
+CREATE SEQUENCE public.operator_blacklist_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.operators_id_seq;
+
+CREATE SEQUENCE public.operators_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.pyramid_multipliers_id_seq;
+
+CREATE SEQUENCE public.pyramid_multipliers_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.regions_id_seq;
+
+CREATE SEQUENCE public.regions_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.rl_actions_id_seq;
+
+CREATE SEQUENCE public.rl_actions_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.rl_states_id_seq;
+
+CREATE SEQUENCE public.rl_states_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.system_configs_id_seq;
+
+CREATE SEQUENCE public.system_configs_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.template_datasets_id_seq;
+
+CREATE SEQUENCE public.template_datasets_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.template_evaluations_id_seq;
+
+CREATE SEQUENCE public.template_evaluations_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.template_variables_id_seq;
+
+CREATE SEQUENCE public.template_variables_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.templates_id_seq;
+
+CREATE SEQUENCE public.templates_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.trace_steps_id_seq;
+
+CREATE SEQUENCE public.trace_steps_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.universes_id_seq;
+
+CREATE SEQUENCE public.universes_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;
+-- DROP SEQUENCE public.wqb_credentials_id_seq;
+
+CREATE SEQUENCE public.wqb_credentials_id_seq
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 2147483647
+	START 1
+	CACHE 1
+	NO CYCLE;-- public.alpha_pnl definition
+
+-- Drop table
+
+-- DROP TABLE public.alpha_pnl;
+
+CREATE TABLE public.alpha_pnl (
 	id serial4 NOT NULL,
 	alpha_id int4 NULL,
 	trade_date date NOT NULL,
@@ -16,7 +254,14 @@ CREATE TABLE IF NOT EXISTS public.alpha_pnl (
 	CONSTRAINT alpha_pnl_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.brain_auth_tokens (
+
+-- public.brain_auth_tokens definition
+
+-- Drop table
+
+-- DROP TABLE public.brain_auth_tokens;
+
+CREATE TABLE public.brain_auth_tokens (
 	id int4 DEFAULT 1 NOT NULL,
 	email varchar(255) NULL,
 	jwt_token text NOT NULL,
@@ -25,15 +270,14 @@ CREATE TABLE IF NOT EXISTS public.brain_auth_tokens (
 	CONSTRAINT brain_auth_tokens_pkey PRIMARY KEY (id)
 );
 
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
 
-CREATE TABLE IF NOT EXISTS public.datasets (
+-- public.datasets definition
+
+-- Drop table
+
+-- DROP TABLE public.datasets;
+
+CREATE TABLE public.datasets (
 	id serial4 NOT NULL,
 	dataset_id varchar(100) NOT NULL,
 	region varchar(10) NOT NULL,
@@ -50,20 +294,35 @@ CREATE TABLE IF NOT EXISTS public.datasets (
 	pyramid_multiplier numeric(3, 2) NULL,
 	delay int4 DEFAULT 1 NULL,
 	is_active bool DEFAULT true NULL,
-	mining_weight float DEFAULT 1.0,  -- Added for Agent prioritization
-    alpha_success_count int4 DEFAULT 0, -- Added for Agent stats
-    alpha_fail_count int4 DEFAULT 0,    -- Added for Agent stats
+	mining_weight float8 DEFAULT 1.0 NULL,
+	alpha_success_count int4 DEFAULT 0 NULL,
+	alpha_fail_count int4 DEFAULT 0 NULL,
 	last_synced_at timestamp NULL,
 	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
 	updated_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+	date_coverage float8 NULL,
+	themes jsonb NULL,
+	resources jsonb NULL,
 	CONSTRAINT datasets_dataset_id_region_delay_universe_key UNIQUE (dataset_id, region, delay, universe),
-	CONSTRAINT datasets_pkey PRIMARY KEY (id)
+	CONSTRAINT datasets_pkey PRIMARY KEY (id),
+	CONSTRAINT uq_dataset_region_universe UNIQUE (dataset_id, region, universe)
 );
 
-DROP TRIGGER IF EXISTS update_datasets_updated_at ON public.datasets;
-create trigger update_datasets_updated_at before update on public.datasets for each row execute function update_updated_at_column();
+-- Table Triggers
 
-CREATE TABLE IF NOT EXISTS public.generation_tasks (
+create trigger update_datasets_updated_at before
+update
+    on
+    public.datasets for each row execute function update_updated_at_column();
+
+
+-- public.generation_tasks definition
+
+-- Drop table
+
+-- DROP TABLE public.generation_tasks;
+
+CREATE TABLE public.generation_tasks (
 	id serial4 NOT NULL,
 	task_id varchar(50) NOT NULL,
 	task_type varchar(50) NOT NULL,
@@ -81,7 +340,35 @@ CREATE TABLE IF NOT EXISTS public.generation_tasks (
 	CONSTRAINT generation_tasks_task_id_key UNIQUE (task_id)
 );
 
-CREATE TABLE IF NOT EXISTS public.llm_providers (
+
+-- public.knowledge_entries definition
+
+-- Drop table
+
+-- DROP TABLE public.knowledge_entries;
+
+CREATE TABLE public.knowledge_entries (
+	id serial4 NOT NULL,
+	entry_type varchar(50) NOT NULL,
+	pattern text NULL,
+	description text NULL,
+	meta_data jsonb DEFAULT '{}'::jsonb NULL,
+	usage_count int4 DEFAULT 0 NULL,
+	is_active bool DEFAULT true NULL,
+	created_by varchar(50) DEFAULT 'SYSTEM'::character varying NULL,
+	created_at timestamptz DEFAULT now() NULL,
+	updated_at timestamptz DEFAULT now() NULL,
+	CONSTRAINT knowledge_entries_pkey PRIMARY KEY (id)
+);
+
+
+-- public.llm_providers definition
+
+-- Drop table
+
+-- DROP TABLE public.llm_providers;
+
+CREATE TABLE public.llm_providers (
 	id serial4 NOT NULL,
 	"name" varchar(100) NOT NULL,
 	model_name varchar(200) NOT NULL,
@@ -97,7 +384,40 @@ CREATE TABLE IF NOT EXISTS public.llm_providers (
 	CONSTRAINT llm_providers_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.neutralizations (
+
+-- public.mining_tasks definition
+
+-- Drop table
+
+-- DROP TABLE public.mining_tasks;
+
+CREATE TABLE public.mining_tasks (
+	id serial4 NOT NULL,
+	task_name varchar(255) NOT NULL,
+	region varchar(50) NOT NULL,
+	universe varchar(100) NOT NULL,
+	dataset_strategy varchar(50) DEFAULT 'AUTO'::character varying NULL,
+	target_datasets jsonb DEFAULT '[]'::jsonb NULL,
+	agent_mode varchar(50) DEFAULT 'AUTONOMOUS'::character varying NULL,
+	status varchar(50) DEFAULT 'PENDING'::character varying NULL,
+	daily_goal int4 DEFAULT 4 NULL,
+	progress_current int4 DEFAULT 0 NULL,
+	config jsonb DEFAULT '{}'::jsonb NULL,
+	created_at timestamptz DEFAULT now() NULL,
+	updated_at timestamptz DEFAULT now() NULL,
+	current_iteration int4 DEFAULT 0 NULL,
+	max_iterations int4 DEFAULT 10 NULL,
+	CONSTRAINT mining_tasks_pkey PRIMARY KEY (id)
+);
+
+
+-- public.neutralizations definition
+
+-- Drop table
+
+-- DROP TABLE public.neutralizations;
+
+CREATE TABLE public.neutralizations (
 	id serial4 NOT NULL,
 	code varchar(50) NOT NULL,
 	description text NULL,
@@ -106,7 +426,14 @@ CREATE TABLE IF NOT EXISTS public.neutralizations (
 	CONSTRAINT neutralizations_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.operation_logs (
+
+-- public.operation_logs definition
+
+-- Drop table
+
+-- DROP TABLE public.operation_logs;
+
+CREATE TABLE public.operation_logs (
 	id serial4 NOT NULL,
 	operation_type varchar(100) NOT NULL,
 	entity_type varchar(100) NULL,
@@ -116,7 +443,14 @@ CREATE TABLE IF NOT EXISTS public.operation_logs (
 	CONSTRAINT operation_logs_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.operator_blacklist (
+
+-- public.operator_blacklist definition
+
+-- Drop table
+
+-- DROP TABLE public.operator_blacklist;
+
+CREATE TABLE public.operator_blacklist (
 	id serial4 NOT NULL,
 	operator_name varchar(100) NOT NULL,
 	error_message text NULL,
@@ -126,10 +460,34 @@ CREATE TABLE IF NOT EXISTS public.operator_blacklist (
 	CONSTRAINT operator_blacklist_operator_name_key UNIQUE (operator_name),
 	CONSTRAINT operator_blacklist_pkey PRIMARY KEY (id)
 );
-CREATE INDEX IF NOT EXISTS idx_operator_blacklist_active ON public.operator_blacklist USING btree (is_active);
-CREATE INDEX IF NOT EXISTS idx_operator_blacklist_name ON public.operator_blacklist USING btree (operator_name);
+CREATE INDEX idx_operator_blacklist_active ON public.operator_blacklist USING btree (is_active);
+CREATE INDEX idx_operator_blacklist_name ON public.operator_blacklist USING btree (operator_name);
 
-CREATE TABLE IF NOT EXISTS public.operators (
+
+-- public.operator_prefs definition
+
+-- Drop table
+
+-- DROP TABLE public.operator_prefs;
+
+CREATE TABLE public.operator_prefs (
+	operator_name varchar(100) NOT NULL,
+	status varchar(50) DEFAULT 'ACTIVE'::character varying NULL,
+	usage_count int4 DEFAULT 0 NULL,
+	success_count int4 DEFAULT 0 NULL,
+	failure_rate float8 DEFAULT 0.0 NULL,
+	updated_at timestamptz DEFAULT now() NULL,
+	CONSTRAINT operator_prefs_pkey PRIMARY KEY (operator_name)
+);
+
+
+-- public.operators definition
+
+-- Drop table
+
+-- DROP TABLE public.operators;
+
+CREATE TABLE public.operators (
 	id serial4 NOT NULL,
 	"name" varchar(100) NOT NULL,
 	category varchar(100) NULL,
@@ -145,7 +503,14 @@ CREATE TABLE IF NOT EXISTS public.operators (
 	CONSTRAINT operators_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.pyramid_multipliers (
+
+-- public.pyramid_multipliers definition
+
+-- Drop table
+
+-- DROP TABLE public.pyramid_multipliers;
+
+CREATE TABLE public.pyramid_multipliers (
 	id serial4 NOT NULL,
 	category varchar(100) NOT NULL,
 	region varchar(10) NOT NULL,
@@ -158,10 +523,21 @@ CREATE TABLE IF NOT EXISTS public.pyramid_multipliers (
 	CONSTRAINT pyramid_multipliers_pkey PRIMARY KEY (id)
 );
 
-DROP TRIGGER IF EXISTS update_pyramid_multipliers_updated_at ON public.pyramid_multipliers;
-create trigger update_pyramid_multipliers_updated_at before update on public.pyramid_multipliers for each row execute function update_updated_at_column();
+-- Table Triggers
 
-CREATE TABLE IF NOT EXISTS public.regions (
+create trigger update_pyramid_multipliers_updated_at before
+update
+    on
+    public.pyramid_multipliers for each row execute function update_updated_at_column();
+
+
+-- public.regions definition
+
+-- Drop table
+
+-- DROP TABLE public.regions;
+
+CREATE TABLE public.regions (
 	id serial4 NOT NULL,
 	code varchar(10) NOT NULL,
 	"name" varchar(100) NOT NULL,
@@ -172,21 +548,35 @@ CREATE TABLE IF NOT EXISTS public.regions (
 	CONSTRAINT regions_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.rl_states (
+
+-- public.rl_states definition
+
+-- Drop table
+
+-- DROP TABLE public.rl_states;
+
+CREATE TABLE public.rl_states (
 	id serial4 NOT NULL,
 	state_key varchar(200) NOT NULL,
 	state_type varchar(50) NOT NULL,
 	q_value numeric(10, 6) DEFAULT 0.0 NULL,
 	visit_count int4 DEFAULT 0 NULL,
 	success_count int4 DEFAULT 0 NULL,
-	meta_data jsonb NULL, -- Renamed from metadata to avoid reserved word conflict
+	meta_data jsonb NULL,
 	updated_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
 	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
 	CONSTRAINT rl_states_pkey PRIMARY KEY (id),
 	CONSTRAINT rl_states_state_key_key UNIQUE (state_key)
 );
 
-CREATE TABLE IF NOT EXISTS public.system_configs (
+
+-- public.system_configs definition
+
+-- Drop table
+
+-- DROP TABLE public.system_configs;
+
+CREATE TABLE public.system_configs (
 	id serial4 NOT NULL,
 	config_key varchar(100) NOT NULL,
 	config_value text NULL,
@@ -197,7 +587,14 @@ CREATE TABLE IF NOT EXISTS public.system_configs (
 	CONSTRAINT system_configs_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.template_evaluations (
+
+-- public.template_evaluations definition
+
+-- Drop table
+
+-- DROP TABLE public.template_evaluations;
+
+CREATE TABLE public.template_evaluations (
 	id serial4 NOT NULL,
 	template_id int4 NULL,
 	evaluation_batch_id varchar(50) NULL,
@@ -216,7 +613,14 @@ CREATE TABLE IF NOT EXISTS public.template_evaluations (
 	CONSTRAINT template_evaluations_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.template_variables (
+
+-- public.template_variables definition
+
+-- Drop table
+
+-- DROP TABLE public.template_variables;
+
+CREATE TABLE public.template_variables (
 	id serial4 NOT NULL,
 	template_id int4 NULL,
 	variable_name varchar(100) NOT NULL,
@@ -228,7 +632,14 @@ CREATE TABLE IF NOT EXISTS public.template_variables (
 	CONSTRAINT template_variables_template_id_variable_name_key UNIQUE (template_id, variable_name)
 );
 
-CREATE TABLE IF NOT EXISTS public.templates (
+
+-- public.templates definition
+
+-- Drop table
+
+-- DROP TABLE public.templates;
+
+CREATE TABLE public.templates (
 	id serial4 NOT NULL,
 	"name" varchar(200) NOT NULL,
 	description text NULL,
@@ -258,10 +669,21 @@ CREATE TABLE IF NOT EXISTS public.templates (
 	CONSTRAINT templates_pkey PRIMARY KEY (id)
 );
 
-DROP TRIGGER IF EXISTS update_templates_updated_at ON public.templates;
-create trigger update_templates_updated_at before update on public.templates for each row execute function update_updated_at_column();
+-- Table Triggers
 
-CREATE TABLE IF NOT EXISTS public.wqb_credentials (
+create trigger update_templates_updated_at before
+update
+    on
+    public.templates for each row execute function update_updated_at_column();
+
+
+-- public.wqb_credentials definition
+
+-- Drop table
+
+-- DROP TABLE public.wqb_credentials;
+
+CREATE TABLE public.wqb_credentials (
 	id serial4 NOT NULL,
 	username_encrypted text NOT NULL,
 	password_encrypted text NOT NULL,
@@ -271,7 +693,185 @@ CREATE TABLE IF NOT EXISTS public.wqb_credentials (
 	CONSTRAINT wqb_credentials_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS public.alphas (
+
+-- public.datafields definition
+
+-- Drop table
+
+-- DROP TABLE public.datafields;
+
+CREATE TABLE public.datafields (
+	id serial4 NOT NULL,
+	dataset_id int4 NULL,
+	region varchar(10) NOT NULL,
+	universe varchar(50) NOT NULL,
+	delay int4 DEFAULT 1 NULL,
+	field_id varchar(200) NOT NULL,
+	field_name varchar(200) NOT NULL,
+	field_type varchar(50) NULL,
+	description text NULL,
+	is_active bool DEFAULT true NULL,
+	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+	category varchar(100) NULL,
+	subcategory varchar(100) NULL,
+	date_coverage float8 NULL,
+	coverage float8 NULL,
+	pyramid_multiplier float8 NULL,
+	alpha_count int4 NULL,
+	CONSTRAINT datafields_dataset_id_field_id_key UNIQUE (dataset_id, field_id),
+	CONSTRAINT datafields_pkey PRIMARY KEY (id),
+	CONSTRAINT uq_datafield_dataset_field UNIQUE (dataset_id, field_id),
+	CONSTRAINT datafields_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES public.datasets(id)
+);
+CREATE INDEX idx_datafields_region_delay_universe ON public.datafields USING btree (region, delay, universe);
+
+
+-- public.rl_actions definition
+
+-- Drop table
+
+-- DROP TABLE public.rl_actions;
+
+CREATE TABLE public.rl_actions (
+	id serial4 NOT NULL,
+	state_id int4 NULL,
+	action_type varchar(100) NULL,
+	action_params jsonb NULL,
+	reward numeric(10, 6) NULL,
+	next_state_id int4 NULL,
+	executed_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+	CONSTRAINT rl_actions_pkey PRIMARY KEY (id),
+	CONSTRAINT rl_actions_next_state_id_fkey FOREIGN KEY (next_state_id) REFERENCES public.rl_states(id),
+	CONSTRAINT rl_actions_state_id_fkey FOREIGN KEY (state_id) REFERENCES public.rl_states(id)
+);
+
+
+-- public.template_datasets definition
+
+-- Drop table
+
+-- DROP TABLE public.template_datasets;
+
+CREATE TABLE public.template_datasets (
+	id serial4 NOT NULL,
+	template_id int4 NULL,
+	dataset_id int4 NULL,
+	priority int4 DEFAULT 0 NULL,
+	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+	CONSTRAINT template_datasets_pkey PRIMARY KEY (id),
+	CONSTRAINT template_datasets_template_id_dataset_id_key UNIQUE (template_id, dataset_id),
+	CONSTRAINT template_datasets_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES public.datasets(id)
+);
+
+
+-- public.trace_steps definition
+
+-- Drop table
+
+-- DROP TABLE public.trace_steps;
+
+CREATE TABLE public.trace_steps (
+	id serial4 NOT NULL,
+	task_id int4 NOT NULL,
+	step_type varchar(50) NOT NULL,
+	step_order int4 NOT NULL,
+	input_data jsonb DEFAULT '{}'::jsonb NULL,
+	output_data jsonb DEFAULT '{}'::jsonb NULL,
+	duration_ms int4 NULL,
+	status varchar(50) DEFAULT 'RUNNING'::character varying NULL,
+	error_message text NULL,
+	created_at timestamptz DEFAULT now() NULL,
+	iteration int4 DEFAULT 1 NULL,
+	CONSTRAINT trace_steps_pkey PRIMARY KEY (id),
+	CONSTRAINT trace_steps_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.mining_tasks(id) ON DELETE CASCADE
+);
+
+
+-- public.universes definition
+
+-- Drop table
+
+-- DROP TABLE public.universes;
+
+CREATE TABLE public.universes (
+	id serial4 NOT NULL,
+	region_id int4 NULL,
+	code varchar(50) NOT NULL,
+	description text NULL,
+	is_default bool DEFAULT false NULL,
+	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+	CONSTRAINT universes_pkey PRIMARY KEY (id),
+	CONSTRAINT universes_region_id_code_key UNIQUE (region_id, code),
+	CONSTRAINT universes_region_id_fkey FOREIGN KEY (region_id) REFERENCES public.regions(id)
+);
+
+
+-- public.alpha_base definition
+
+-- Drop table
+
+-- DROP TABLE public.alpha_base;
+
+CREATE TABLE public.alpha_base (
+	id serial4 NOT NULL,
+	task_id int4 NULL,
+	trace_step_id int4 NULL,
+	alpha_id varchar(100) NULL,
+	"expression" text NOT NULL,
+	hypothesis text NULL,
+	logic_explanation text NULL,
+	region varchar(50) NULL,
+	universe varchar(100) NULL,
+	dataset_id varchar(100) NULL,
+	fields_used jsonb NULL,
+	operators_used jsonb NULL,
+	simulation_status varchar(50) NULL,
+	quality_status varchar(50) NULL,
+	diversity_status varchar(50) NULL,
+	human_feedback varchar(50) NULL,
+	feedback_comment text NULL,
+	metrics jsonb NULL,
+	pnl_data jsonb NULL,
+	created_at timestamptz DEFAULT now() NULL,
+	CONSTRAINT alpha_base_pkey PRIMARY KEY (id),
+	CONSTRAINT alpha_base_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.mining_tasks(id),
+	CONSTRAINT alpha_base_trace_step_id_fkey FOREIGN KEY (trace_step_id) REFERENCES public.trace_steps(id)
+);
+CREATE INDEX idx_alpha_quality ON public.alpha_base USING btree (quality_status);
+CREATE INDEX idx_alpha_region ON public.alpha_base USING btree (region);
+CREATE UNIQUE INDEX ix_alpha_base_alpha_id ON public.alpha_base USING btree (alpha_id);
+CREATE INDEX ix_alpha_base_id ON public.alpha_base USING btree (id);
+
+
+-- public.alpha_failures definition
+
+-- Drop table
+
+-- DROP TABLE public.alpha_failures;
+
+CREATE TABLE public.alpha_failures (
+	id serial4 NOT NULL,
+	task_id int4 NULL,
+	trace_step_id int4 NULL,
+	"expression" text NULL,
+	error_type varchar(100) NULL,
+	error_message text NULL,
+	raw_response text NULL,
+	is_analyzed bool DEFAULT false NULL,
+	created_at timestamptz DEFAULT now() NULL,
+	CONSTRAINT alpha_failures_pkey PRIMARY KEY (id),
+	CONSTRAINT alpha_failures_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.mining_tasks(id) ON DELETE SET NULL,
+	CONSTRAINT alpha_failures_trace_step_id_fkey FOREIGN KEY (trace_step_id) REFERENCES public.trace_steps(id) ON DELETE SET NULL
+);
+
+
+-- public.alphas definition
+
+-- Drop table
+
+-- DROP TABLE public.alphas;
+
+CREATE TABLE public.alphas (
 	id serial4 NOT NULL,
 	alpha_id varchar(20) NULL,
 	alpha_type varchar(20) DEFAULT 'REGULAR'::character varying NOT NULL,
@@ -295,7 +895,6 @@ CREATE TABLE IF NOT EXISTS public.alphas (
 	instrument_type varchar(20) DEFAULT 'EQUITY'::character varying NULL,
 	region varchar(10) NOT NULL,
 	universe varchar(50) NOT NULL,
-	dataset_id varchar(50) NULL,
 	delay int4 DEFAULT 1 NULL,
 	decay int4 DEFAULT 0 NULL,
 	neutralization varchar(50) DEFAULT 'NONE'::character varying NULL,
@@ -370,162 +969,53 @@ CREATE TABLE IF NOT EXISTS public.alphas (
 	submitted_at timestamp NULL,
 	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
 	updated_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
-    -- Agent Extensions
-    task_id INTEGER NULL,
-    trace_step_id INTEGER NULL,
-    human_feedback VARCHAR(50) DEFAULT 'NONE',
-    feedback_comment TEXT,
-    metrics JSONB DEFAULT '{}'::jsonb,
-    fields_used JSONB DEFAULT '[]'::jsonb,
-    operators_used JSONB DEFAULT '[]'::jsonb,
-    settings JSONB,
-    checks JSONB,
-    is_metrics JSONB,
-    os_metrics JSONB,
-    hypothesis TEXT,
-    logic_explanation TEXT,
-    config JSONB DEFAULT '{}'::jsonb,
+	task_id int4 NULL,
+	trace_step_id int4 NULL,
+	human_feedback varchar(50) DEFAULT 'NONE'::character varying NULL,
+	feedback_comment text NULL,
+	metrics jsonb DEFAULT '{}'::jsonb NULL,
+	fields_used jsonb DEFAULT '[]'::jsonb NULL,
+	operators_used jsonb DEFAULT '[]'::jsonb NULL,
+	quality_status varchar(50) DEFAULT 'PENDING'::character varying NULL,
+	hypothesis text NULL,
+	logic_explanation text NULL,
+	settings jsonb NULL,
+	checks jsonb NULL,
+	is_metrics jsonb NULL,
+	os_metrics jsonb NULL,
+	"type" varchar(20) DEFAULT 'REGULAR'::character varying NULL,
+	dataset_id varchar(50) NULL,
 	CONSTRAINT alphas_pkey PRIMARY KEY (id),
-	CONSTRAINT alphas_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.templates(id)
+	CONSTRAINT uq_alpha_id UNIQUE (alpha_id),
+	CONSTRAINT alphas_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.mining_tasks(id) ON DELETE SET NULL,
+	CONSTRAINT alphas_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.templates(id),
+	CONSTRAINT alphas_trace_step_id_fkey FOREIGN KEY (trace_step_id) REFERENCES public.trace_steps(id) ON DELETE SET NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_alphas_alpha_id_unique ON public.alphas USING btree (alpha_id) WHERE (alpha_id IS NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_alphas_composite_score ON public.alphas USING btree (composite_score DESC);
-CREATE INDEX IF NOT EXISTS idx_alphas_is_all_pass ON public.alphas USING btree (is_all_pass) WHERE (is_all_pass = true);
-CREATE INDEX IF NOT EXISTS idx_alphas_region_delay_universe ON public.alphas USING btree (region, delay, universe);
-CREATE INDEX IF NOT EXISTS idx_alphas_status ON public.alphas USING btree (status);
-CREATE INDEX IF NOT EXISTS idx_alphas_template_id ON public.alphas USING btree (template_id);
+CREATE UNIQUE INDEX idx_alphas_alpha_id_unique ON public.alphas USING btree (alpha_id) WHERE (alpha_id IS NOT NULL);
+CREATE INDEX idx_alphas_composite_score ON public.alphas USING btree (composite_score DESC);
+CREATE INDEX idx_alphas_is_all_pass ON public.alphas USING btree (is_all_pass) WHERE (is_all_pass = true);
+CREATE INDEX idx_alphas_region_delay_universe ON public.alphas USING btree (region, delay, universe);
+CREATE INDEX idx_alphas_status ON public.alphas USING btree (status);
+CREATE INDEX idx_alphas_template_id ON public.alphas USING btree (template_id);
 
-DROP TRIGGER IF EXISTS update_alphas_updated_at ON public.alphas;
-create trigger update_alphas_updated_at before update on public.alphas for each row execute function update_updated_at_column();
+-- Table Triggers
 
-CREATE TABLE IF NOT EXISTS public.datafields (
-	id serial4 NOT NULL,
-	dataset_id int4 NULL,
-	region varchar(10) NOT NULL,
-	universe varchar(50) NOT NULL,
-	delay int4 DEFAULT 1 NULL,
-	field_id varchar(200) NOT NULL,
-	field_name varchar(200) NOT NULL,
-	field_type varchar(50) NULL,
-	description text NULL,
-	is_active bool DEFAULT true NULL,
-	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
-	CONSTRAINT datafields_dataset_id_field_id_key UNIQUE (dataset_id, field_id),
-	CONSTRAINT datafields_pkey PRIMARY KEY (id),
-	CONSTRAINT datafields_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES public.datasets(id)
-);
-CREATE INDEX IF NOT EXISTS idx_datafields_region_delay_universe ON public.datafields USING btree (region, delay, universe);
+create trigger update_alphas_updated_at before
+update
+    on
+    public.alphas for each row execute function update_updated_at_column();
 
-CREATE TABLE IF NOT EXISTS public.rl_actions (
-	id serial4 NOT NULL,
-	state_id int4 NULL,
-	action_type varchar(100) NULL,
-	action_params jsonb NULL,
-	reward numeric(10, 6) NULL,
-	next_state_id int4 NULL,
-	executed_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
-	CONSTRAINT rl_actions_pkey PRIMARY KEY (id),
-	CONSTRAINT rl_actions_next_state_id_fkey FOREIGN KEY (next_state_id) REFERENCES public.rl_states(id),
-	CONSTRAINT rl_actions_state_id_fkey FOREIGN KEY (state_id) REFERENCES public.rl_states(id)
-);
 
-CREATE TABLE IF NOT EXISTS public.template_datasets (
-	id serial4 NOT NULL,
-	template_id int4 NULL,
-	dataset_id int4 NULL,
-	priority int4 DEFAULT 0 NULL,
-	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
-	CONSTRAINT template_datasets_pkey PRIMARY KEY (id),
-	CONSTRAINT template_datasets_template_id_dataset_id_key UNIQUE (template_id, dataset_id),
-	CONSTRAINT template_datasets_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES public.datasets(id)
-);
 
-CREATE TABLE IF NOT EXISTS public.universes (
-	id serial4 NOT NULL,
-	region_id int4 NULL,
-	code varchar(50) NOT NULL,
-	description text NULL,
-	is_default bool DEFAULT false NULL,
-	created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
-	CONSTRAINT universes_pkey PRIMARY KEY (id),
-	CONSTRAINT universes_region_id_code_key UNIQUE (region_id, code),
-	CONSTRAINT universes_region_id_fkey FOREIGN KEY (region_id) REFERENCES public.regions(id)
-);
+-- DROP FUNCTION public.update_updated_at_column();
 
--- =====================================================================
--- PART 2: AGENT SCHEMA EXTENSIONS
--- =====================================================================
-
--- 1. Mining Tasks (Maps partially to generation_tasks, but specialized)
-CREATE TABLE IF NOT EXISTS mining_tasks (
-    id SERIAL PRIMARY KEY,
-    task_name VARCHAR(255) NOT NULL,
-    region VARCHAR(50) NOT NULL,
-    universe VARCHAR(100) NOT NULL,
-    dataset_strategy VARCHAR(50) DEFAULT 'AUTO',
-    target_datasets JSONB DEFAULT '[]'::jsonb,
-    agent_mode VARCHAR(50) DEFAULT 'AUTONOMOUS',
-    status VARCHAR(50) DEFAULT 'PENDING',
-    daily_goal INTEGER DEFAULT 4,
-    progress_current INTEGER DEFAULT 0,
-    config JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- 2. Trace Steps
-CREATE TABLE IF NOT EXISTS trace_steps (
-    id SERIAL PRIMARY KEY,
-    task_id INTEGER NOT NULL REFERENCES mining_tasks(id) ON DELETE CASCADE,
-    step_type VARCHAR(50) NOT NULL,
-    step_order INTEGER NOT NULL,
-    input_data JSONB DEFAULT '{}'::jsonb,
-    output_data JSONB DEFAULT '{}'::jsonb,
-    duration_ms INTEGER,
-    status VARCHAR(50) DEFAULT 'RUNNING',
-    error_message TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- 3. Alpha Failures
-CREATE TABLE IF NOT EXISTS alpha_failures (
-    id SERIAL PRIMARY KEY,
-    task_id INTEGER REFERENCES mining_tasks(id) ON DELETE SET NULL,
-    trace_step_id INTEGER REFERENCES trace_steps(id) ON DELETE SET NULL,
-    expression TEXT,
-    error_type VARCHAR(100),
-    error_message TEXT,
-    raw_response TEXT,
-    is_analyzed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- 4. Knowledge Entries
-CREATE TABLE IF NOT EXISTS knowledge_entries (
-    id SERIAL PRIMARY KEY,
-    entry_type VARCHAR(50) NOT NULL,
-    pattern TEXT,
-    description TEXT,
-    meta_data JSONB DEFAULT '{}'::jsonb,
-    usage_count INTEGER DEFAULT 0,
-    is_active BOOLEAN DEFAULT TRUE,
-    created_by VARCHAR(50) DEFAULT 'SYSTEM',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- 5. Operator Prefs (Compatibility)
-CREATE TABLE IF NOT EXISTS operator_prefs (
-    operator_name VARCHAR(100) PRIMARY KEY,
-    status VARCHAR(50) DEFAULT 'ACTIVE',
-    usage_count INTEGER DEFAULT 0,
-    success_count INTEGER DEFAULT 0,
-    failure_rate FLOAT DEFAULT 0.0,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Foreign Key Links for Alphas (Agent)
-ALTER TABLE public.alphas ADD CONSTRAINT alphas_task_id_fkey FOREIGN KEY (task_id) REFERENCES mining_tasks(id) ON DELETE SET NULL;
-ALTER TABLE public.alphas ADD CONSTRAINT alphas_trace_step_id_fkey FOREIGN KEY (trace_step_id) REFERENCES trace_steps(id) ON DELETE SET NULL;
-
-SELECT 'Unified Schema Loaded Successfully' as status;
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$function$
+;

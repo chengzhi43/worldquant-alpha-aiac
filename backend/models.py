@@ -114,6 +114,7 @@ class TraceStep(SQLAlchemyBase):
     # Step metadata
     step_type = Column(String(50), nullable=False)  # RAG_QUERY, HYPOTHESIS, CODE_GEN, etc.
     step_order = Column(Integer, nullable=False)
+    iteration = Column(Integer, default=1) # Iteration number for multi-round loop
     
     # Input/Output for transparency
     input_data = Column(JSONB, default={})   # E.g., RAG query, prompt
@@ -520,7 +521,13 @@ class MiningTask(SQLAlchemyBase):
     
     status = Column(String(50), default="PENDING")
     daily_goal = Column(Integer, default=4)
+    daily_goal = Column(Integer, default=4)
     progress_current = Column(Integer, default=0)
+    
+    # Evolution tracking
+    current_iteration = Column(Integer, default=0)
+    max_iterations = Column(Integer, default=10)
+    
     config = Column(JSONB, default={})
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -538,6 +545,7 @@ class TraceStep(SQLAlchemyBase):
     
     step_type = Column(String(50), nullable=False)
     step_order = Column(Integer, nullable=False)
+    iteration = Column(Integer, default=1)
     input_data = Column(JSONB, default={})
     output_data = Column(JSONB, default={})
     

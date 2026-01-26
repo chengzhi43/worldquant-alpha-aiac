@@ -143,24 +143,44 @@ def run_mining_task(self, task_id: int):
                             logger.warning(f"No fields found for dataset {dataset_id}, skipping")
                             continue
                         
-                        # Run mining iteration
+                        # Calculate remaining alphas needed
+                        remaining_goal = task.daily_goal - task.progress_current
+                        if remaining_goal <= 0:
+                            logger.info(f"Task {task_id} already reached goal, stopping")
+                            break
+                        
+                        # Run evolution loop (multi-round iteration)
                         try:
-                            alphas = await mining_agent.run_mining_iteration(
+                            result = await mining_agent.run_evolution_loop(
                                 task=task,
                                 dataset_id=dataset_id,
                                 fields=fields,
                                 operators=operators,
-                                num_alphas=4
+                                max_iterations=10,  # Configurable: max rounds per dataset
+                                target_alphas=remaining_goal,
+                                num_alphas_per_round=4
                             )
+                            
+                            # Update progress with actual successes
+                            task.progress_current += result.get("total_success", 0)
+                            await db.commit()
+                            
+                            total_alphas += len(result.get("all_alphas", []))
+                            
+                            logger.info(
+                                f"Evolution loop for {dataset_id} complete | "
+                                f"iterations={result.get('iterations_completed')} "
+                                f"success={result.get('total_success')}"
+                            )
+                            
+                            # Check if goal reached after this dataset
+                            if result.get("target_reached"):
+                                logger.info(f"Task {task_id} reached goal via evolution loop")
+                                break
+                                
                         except Exception as e:
-                             logger.error(f"Mining iteration failed for {dataset_id}: {e}")
+                             logger.error(f"Evolution loop failed for {dataset_id}: {e}")
                              continue
-                        
-                        # Update progress
-                        task.progress_current += len([a for a in alphas if a.quality_status == "PASS"])
-                        await db.commit()
-                        
-                        total_alphas += len(alphas)
                 
                 # Mark task complete
                 await db.execute(

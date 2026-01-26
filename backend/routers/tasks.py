@@ -55,6 +55,7 @@ class TraceStepResponse(BaseModel):
     id: int
     step_type: str
     step_order: int
+    iteration: int = 1
     input_data: dict
     output_data: dict
     duration_ms: Optional[int] = None

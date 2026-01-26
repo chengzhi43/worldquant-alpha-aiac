@@ -520,7 +520,15 @@ async def node_validate(state: MiningState, config: RunnableConfig = None) -> Di
         else:
             try:
                 # Use validator
-                validation_result = _VALIDATOR.check_expression(expression)
+                # Extract allowed field IDs (handle both dict with 'id'/'name' and raw strings if any)
+                allowed_fields = []
+                for f in state.fields:
+                    if isinstance(f, dict):
+                        allowed_fields.append(f.get("id", f.get("name")))
+                    else:
+                        allowed_fields.append(str(f))
+                
+                validation_result = _VALIDATOR.check_expression(expression, allowed_fields=allowed_fields)
                 if not validation_result.get("valid", False):
                     is_valid = False
                     err_list = validation_result.get("errors", [])
@@ -549,7 +557,14 @@ async def node_validate(state: MiningState, config: RunnableConfig = None) -> Di
     trace_update = await record_trace(
         state, trace_service, node_name,
         {"count": len(updated_alphas)},
-        {"valid_count": valid_count, "invalid_count": len(updated_alphas) - valid_count},
+        {
+            "valid_count": valid_count, 
+            "invalid_count": len(updated_alphas) - valid_count,
+            "failures": [
+                {"expression": a.expression, "error": a.validation_error}
+                for a in updated_alphas if not a.is_valid
+            ]
+        },
         duration_ms,
         "SUCCESS"
     )
@@ -602,6 +617,9 @@ async def node_self_correct(state: MiningState, llm_service: LLMService, config:
     updated_alphas = state.pending_alphas.copy()
     fixed_count = 0
     
+    # Track corrections for trace
+    corrections_made = []
+    
     # Process sequentially for now to avoid complexity/rate limits
     # Could be parallelized with asyncio.gather if needed
     for idx in invalid_indices:
@@ -631,6 +649,11 @@ async def node_self_correct(state: MiningState, llm_service: LLMService, config:
             if response.success and response.parsed:
                 fixed = response.parsed.get("fixed_expression")
                 if fixed:
+                    corrections_made.append({
+                        "original": current.expression,
+                        "fixed": fixed,
+                        "error": current.validation_error
+                    })
                     updated_alpha.expression = fixed
                     updated_alpha.is_valid = None # Reset for re-validation
                     updated_alpha.validation_error = None
@@ -648,7 +671,10 @@ async def node_self_correct(state: MiningState, llm_service: LLMService, config:
     trace_update = await record_trace(
         state, trace_service, node_name,
         {"fix_targets": len(invalid_indices)},
-        {"fixed_count": fixed_count},
+        {
+            "fixed_count": fixed_count,
+            "corrections": corrections_made
+        },
         duration_ms,
         "SUCCESS"
     )

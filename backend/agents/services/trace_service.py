@@ -51,13 +51,15 @@ class TraceService:
     - Step order management
     """
     
-    def __init__(self, db: AsyncSession, task_id: int, initial_step_order: int = 0):
+    def __init__(self, db: AsyncSession, task_id: int, initial_step_order: int = 0, iteration: int = 1):
         self.db = db
         self.task_id = task_id
+        self.iteration = iteration
         self.current_step_order = initial_step_order
         self._pending_records: List[TraceStepRecord] = []
         
-        logger.debug(f"[TraceService] Initialized | task_id={task_id}")
+        logger.info(f"[[DEBUG_TRACE]] TraceService Initialized | ID={id(self)} task_id={task_id} iter={iteration}")
+        logger.debug(f"[TraceService] Initialized | task_id={task_id} iter={iteration}")
     
     def create_record(
         self,
@@ -103,12 +105,16 @@ class TraceService:
             task_id=self.task_id,
             step_type=record.step_type,
             step_order=record.step_order,
+            iteration=self.iteration,
             input_data=record.input_data,
             output_data=record.output_data,
             duration_ms=record.duration_ms,
             status=record.status,
+
             error_message=record.error_message
         )
+        
+        logger.info(f"[[DEBUG_TRACE]] Persisting Record | type={record.step_type} iter={self.iteration}")
         
         self.db.add(trace_step)
         await self.db.flush()
@@ -116,7 +122,7 @@ class TraceService:
         
         logger.debug(
             f"[TraceService] Record persisted | "
-            f"id={trace_step.id} step={record.step_order}"
+            f"id={trace_step.id} step={record.step_order} iter={self.iteration}"
         )
         
         return trace_step
@@ -135,6 +141,7 @@ class TraceService:
                 task_id=self.task_id,
                 step_type=record.step_type,
                 step_order=record.step_order,
+                iteration=self.iteration,
                 input_data=record.input_data,
                 output_data=record.output_data,
                 duration_ms=record.duration_ms,

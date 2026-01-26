@@ -20,7 +20,8 @@ class TaskCreateRequest(BaseModel):
     hypothesis: str
     dataset_ids: List[str]
     operator_ids: List[str] = []
-    iteration_limit: int = 1
+    iteration_limit: int = 1 # Legacy compatibility
+    max_iterations: int = 10 # New field for evolution loop
 
 class TaskResponse(BaseModel):
     id: int
@@ -52,7 +53,8 @@ async def create_task(
         hypothesis=request.hypothesis,
         dataset_ids=request.dataset_ids,
         operator_ids=request.operator_ids,
-        iteration_limit=request.iteration_limit
+        iteration_limit=request.iteration_limit,
+        max_iterations=request.max_iterations
     )
     # Pydantic conversion handles the rest
     return TaskResponse(

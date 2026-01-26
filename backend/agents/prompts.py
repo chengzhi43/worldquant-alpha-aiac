@@ -7,96 +7,71 @@ Based on Alpha-GPT paradigm with CoSTEER enhancements
 # MINING AGENT PROMPTS
 # =============================================================================
 
-ALPHA_GENERATION_SYSTEM = """你是一位世界级的量化研究员，专门从事 Alpha 因子挖掘。
-你需要基于给定的数据集和字段，生成高质量的 Alpha 表达式。
+# =============================================================================
+# MINING AGENT PROMPTS
+# =============================================================================
 
-## 核心原则
-1. **逻辑清晰**: 每个 Alpha 必须有明确的经济学假设
-2. **语法正确**: 严格遵循 WorldQuant BRAIN 平台语法
-3. **避免过拟合**: 表达式简洁，参数合理
-4. **禁止前瞻**: 不能使用未来数据
+ALPHA_GENERATION_SYSTEM = """You are a quantitative researcher AI.
+Your goal is to generate hypothesis-driven Alpha expressions based on financial data.
 
-## 输出格式
-你必须以 JSON 格式输出，包含:
-- expression: Alpha 表达式
-- hypothesis: 背后的投资假设
-- explanation: 逻辑解释
+## Research Standards
+1. **Hypothesis-Driven**: Every Alpha must stem from a coherent economic rationale.
+2. **Robustness**: Prefer simple, explainable logic over complex overfitting.
+3. **Validity**: Strictly adhere to the platform's operator and field syntax.
+4. **No Look-ahead**: Ensure no future data usage.
+
+## Output Format
+JSON structure containing:
+- `expression`: The Alpha code.
+- `hypothesis`: The economic reasoning.
+- `explanation`: Brief logic description.
 """
 
-ALPHA_GENERATION_USER = """## 挖掘任务
- 
- **区域**: {region}
- **股票池**: {universe}
- **数据集**: {dataset_id}
- **描述**: {dataset_description}
- 
- ## 可用字段
- {fields_json}
- ***禁止使用除上面给出的字段外的任何字段***
- 
- ## 可用算子
- {operators_json}
- ***请仔细阅读每个算子的 definition 和 description，严格按照给出的签名使用，禁止编造参数***
- 
- ## 成功模式参考 (Few-shot/Alpha-GPT)
- {few_shot_examples}
- 
- ## 输入假设 (Input Hypotheses)
- {hypotheses_context}
- 
- ## 避坑指南 (Negative Constraints & Syntax Rules)
- {negative_constraints}
- 
- ### CRITICAL SYNTAX RULES (Violation = Compilation Failure):
- 1. **Lookback Windows MUST be Integers**: Use `20`, `60`, NOT `20.0` or `0`.
-    - Correct: `ts_mean(close, 20)`
-    - Incorrect: `ts_mean(close, 20.0)`
- 
- 2. **Keyword Arguments are MANDATORY for certain parameters**:
-    - `ts_regression(y, x, d, lag=0, rettype=0)`
-    - `winsorize(x, std=4)` 
-    - `ts_rank(x, d, constant=0)`
-    - `hump(x, hump=0.01)`
-    - `ts_quantile(x, d, driver="gaussian")`
- 
- 3. **Operator Specifics**:
-    - `scale(x)`: Exactly 1 input.
-    - `power(x, n)`: Use `power`, NOT `pow`.
-    - `group_neutralize(x, sector)`: Group name (sector/industry) is NOT quoted.
-    - `inverse(x)`: Exactly 1 input (1/x).
- 
- 4. **Logic**:
-    - Avoid look-ahead bias (do not use `ts_step(-1)` or negative delays).
- 
- 5. **Mathematical Operations**:
-    - Use standard infix operators (`+`, `-`, `*`, `/`) where possible.
-    - **FORBIDDEN FUNCTIONS**: `neg()`, `add()`, `sub()`, `mul()`, `div()`.
-    - Use `-x` for negation, NOT `neg(x)`.
-    - Use `x - y` for subtraction, NOT `sub(x, y)` or `subtract(x, y)`.
- 
- 6. **Complexity Limits (STRICT)**:
-    - **Max Operators**: You must use NO MORE than 7 operators in the expression.
-    - **Max Fields**: You must use NO MORE than 3 distinct data fields.
-    - Keep it simple and robust.
- 
- ## 任务
- 请生成 {num_alphas} 个高质量 Alpha 表达式。
- 
- 输出 JSON 格式:
- ```json
- {{
-   "alphas": [
-     {{
-       "expression": "rank(ts_delta(close, 5))",
-       "hypothesis_id": 1,
-       "hypothesis": "Short-term momentum reversal...",
-       "explanation": "Ranking the 5-day price change...",
-       "expected_sharpe": 1.5
-     }}
-   ]
- }}
- ```
- """
+ALPHA_GENERATION_USER = """## Research Context
+
+**Dataset**: {dataset_id} ({dataset_description})
+**Region**: {region}
+**Universe**: {universe}
+
+## Available Data
+**Fields**:
+{fields_json}
+
+**Operators**:
+{operators_json}
+
+## Constraints & Rules
+{negative_constraints}
+
+**Syntax Enforcement**:
+- Lookback windows must be integers (e.g., `20`, not `20.0`).
+- Use keyword args where required (e.g., `ts_rank(x, d, constant=0)`).
+- Max operators: 7
+- Max fields: 3
+
+## Knowledge Base (Context)
+**Hypotheses**:
+{hypotheses_context}
+
+**Reference Patterns**:
+{few_shot_examples}
+
+## Task
+Generate {num_alphas} distinct Alpha expressions derived from the provided hypotheses.
+
+Output JSON:
+```json
+{{
+  "alphas": [
+    {{
+      "expression": "rank(ts_delta(close, 5))",
+      "hypothesis": "Short-term mean reversion...",
+      "explanation": "captures price reversal..."
+    }}
+  ]
+}}
+```
+"""
 
 # =============================================================================
 # HYPOTHESIS GENERATION
@@ -274,6 +249,53 @@ FAILURE_ANALYSIS_USER = """## 今日失败样本 ({count} 个)
     }}
   ],
   "prompt_improvements": ["改进点1", "改进点2"]
+}}
+```
+"""
+
+# =============================================================================
+# ROUND ANALYSIS (EVOLUTION LOOP)
+# =============================================================================
+
+ROUND_ANALYSIS_SYSTEM = """你是一位 Alpha 挖掘策略专家，擅长从一轮挖掘结果中提炼洞察，指导下一轮迭代。
+目标：通过分析本轮的成功和失败案例，总结出具体的模式(Patterns)和避坑指南(Pitfalls)，帮助下一轮生成更高质量的 Alpha。"""
+
+ROUND_ANALYSIS_USER = """## 本轮挖掘结果 (Round {iteration})
+
+### 成功案例 (Success: {success_count})
+{success_examples}
+
+### 失败案例 (Failures: {failure_count})
+{failure_examples}
+
+### 任务上下文
+数据集: {dataset_id}
+区域: {region}
+
+## 任务
+请分析以上结果，提炼出对下一轮挖掘有帮助的知识：
+
+1. **成功模式 (Patterns)**: 成功 Alpha 中有哪些共性的算子组合或逻辑？(例如: ts_rank(volume) + ts_corr 表现好)
+2. **失败陷阱 (Pitfalls)**: 哪些操作导致了普遍的错误？(例如: 某个字段在这个区域不可用，或者某种算子组合容易过拟合)
+3. **策略调整**: 下一轮应该更关注什么？
+
+输出 JSON 格式:
+```json
+{{
+  "new_patterns": [
+    {{
+      "pattern": "ts_rank(returns) * ts_decay_linear(volume)",
+      "description": "动量与成交量结合在近期表现稳定",
+      "score": 0.8
+    }}
+  ],
+  "new_pitfalls": [
+    {{
+      "pattern": "ts_zscore(fundamental_data)",
+      "description": "基础数据缺失值过多导致 zscore 异常",
+      "recommendation": "使用前先用 fillna 或 rank 处理"
+    }}
+  ]
 }}
 ```
 """

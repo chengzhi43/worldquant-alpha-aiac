@@ -19,7 +19,8 @@ class MiningService(BaseService):
         
     async def create_task(self, name: str, region: str, universe: str, 
                           hypothesis: str, dataset_ids: List[str], 
-                          operator_ids: List[str], iteration_limit: int = 1) -> MiningTask:
+                          operator_ids: List[str], iteration_limit: int = 1,
+                          max_iterations: int = 10) -> MiningTask:
         """Creates a new mining task."""
         task = MiningTask(
             name=name,
@@ -29,6 +30,7 @@ class MiningService(BaseService):
             dataset_ids=dataset_ids,
             operator_ids=operator_ids,
             iteration_limit=iteration_limit,
+            max_iterations=max_iterations,
             status=MiningStatus.PENDING
         )
         self.db.add(task)

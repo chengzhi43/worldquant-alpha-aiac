@@ -281,3 +281,116 @@ class FeedbackAgent:
         if content.endswith('```'):
             content = content[:-3]
         return content.strip()
+        
+    async def learn_from_round(
+        self,
+        successes: List[Alpha],
+        failures: List[Dict],
+        iteration: int,
+        dataset_id: str,
+        region: str
+    ) -> Dict:
+        """
+        Learn from a complete mining round (Successes & Failures).
+        This enables evolutionary improvement between iterations.
+        
+        Args:
+            successes: List of passed Alpha objects
+            failures: List of failure dicts (from Workflow result)
+            iteration: Current iteration index
+            dataset_id: Context
+            region: Context
+            
+        Returns:
+            Dict with learned stats
+        """
+        from backend.agents.prompts import ROUND_ANALYSIS_SYSTEM, ROUND_ANALYSIS_USER
+        
+        # Skip if too little data to learn
+        if not successes and not failures:
+            return {"status": "skipped", "reason": "no_data"}
+            
+        logger.info(f"[Feedback] Learning from Round {iteration} (Success={len(successes)}, Fail={len(failures)})")
+        
+        # Prepare examples for LLM
+        success_examples = "\n".join([
+            f"- Expr: {a.expression}\n  Logic: {a.logic_explanation}\n  Sharpe: {a.metrics.get('sharpe', 'N/A')}"
+            for a in successes[:5]
+        ]) or "None"
+        
+        failure_examples = "\n".join([
+            f"- Expr: {f.get('expression', 'N/A')[:100]}...\n  Error: {f.get('error_message', 'N/A')[:150]}"
+            for f in failures[:5]
+        ]) or "None"
+        
+        try:
+            # Call LLM for analysis
+            prompt = ROUND_ANALYSIS_USER.format(
+                iteration=iteration,
+                success_count=len(successes),
+                success_examples=success_examples,
+                failure_count=len(failures),
+                failure_examples=failure_examples,
+                dataset_id=dataset_id,
+                region=region
+            )
+            
+            response = await self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": ROUND_ANALYSIS_SYSTEM},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                response_format={"type": "json_object"}
+            )
+            
+            analysis = json.loads(self._clean_json(response.choices[0].message.content))
+            
+            # Store learned knowledge
+            new_entries = 0
+            
+            # 1. Store New Patterns
+            for p in analysis.get("new_patterns", []):
+                # Check exist
+                if not await self._pattern_exists(p.get("pattern", "")):
+                    entry = KnowledgeEntry(
+                        entry_type='SUCCESS_PATTERN',
+                        pattern=p.get("pattern"),
+                        description=p.get("description"),
+                        meta_data={
+                            'round': iteration,
+                            'score': p.get("score"),
+                            'source': 'evolution_loop'
+                        }
+                    )
+                    self.db.add(entry)
+                    new_entries += 1
+
+            # 2. Store New Pitfalls
+            for p in analysis.get("new_pitfalls", []):
+                if not await self._pattern_exists(p.get("pattern", "")):
+                    entry = KnowledgeEntry(
+                        entry_type='FAILURE_PITFALL',
+                        pattern=p.get("pattern"),
+                        description=p.get("description"),
+                        meta_data={
+                            'round': iteration,
+                            'recommendation': p.get("recommendation"),
+                            'source': 'evolution_loop'
+                        }
+                    )
+                    self.db.add(entry)
+                    new_entries += 1
+            
+            await self.db.commit()
+            logger.info(f"[Feedback] Round learning complete. Added {new_entries} knowledge entries.")
+            
+            return {
+                "new_entries": new_entries,
+                "analysis": analysis
+            }
+            
+        except Exception as e:
+            logger.error(f"[Feedback] Learn from round failed: {e}")
+            return {"error": str(e)}

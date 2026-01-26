@@ -492,7 +492,7 @@ class ExpressionValidator:
                 return True
         return False
     
-    def validate_function(self, node: ASTNode, is_in_group_arg: bool = False) -> List[str]:
+    def validate_function(self, node: ASTNode, is_in_group_arg: bool = False, allowed_fields: Optional[List[str]] = None) -> List[str]:
         """验证函数调用的参数数量和类型"""
         function_name = node.value
         args = node.children
@@ -523,16 +523,16 @@ class ExpressionValidator:
                         param_index = function_info['param_names'].index(arg['name'])
                         if param_index < len(function_info['arg_types']):
                             expected_type = function_info['arg_types'][param_index]
-                            arg_errors = self._validate_arg_type(arg['value'], expected_type, param_index, function_name, is_in_group_arg)
+                            arg_errors = self._validate_arg_type(arg['value'], expected_type, param_index, function_name, is_in_group_arg, allowed_fields)
                             errors.extend(arg_errors)
                     # 对于winsorize函数，支持std和clip参数
                     elif function_name == 'winsorize' and arg['name'] in ['std', 'clip']:
-                        arg_errors = self._validate_arg_type(arg['value'], 'number', 0, function_name, is_in_group_arg)
+                        arg_errors = self._validate_arg_type(arg['value'], 'number', 0, function_name, is_in_group_arg, allowed_fields)
                         errors.extend(arg_errors)
                     # 对于bucket函数，支持'range'和'buckets'参数
                     elif function_name == 'bucket' and arg['name'] in ['range', 'buckets']:
                         # range和buckets参数应该是string类型
-                        arg_errors = self._validate_arg_type(arg['value'], 'string', 1, function_name, is_in_group_arg)
+                        arg_errors = self._validate_arg_type(arg['value'], 'string', 1, function_name, is_in_group_arg, allowed_fields)
                         errors.extend(arg_errors)
                     else:
                         errors.append(f"函数 {function_name} 不存在参数 '{arg['name']}'")
@@ -548,7 +548,7 @@ class ExpressionValidator:
                         # 验证位置参数的类型
                         if positional_index < len(function_info['arg_types']):
                             expected_type = function_info['arg_types'][positional_index]
-                            arg_errors = self._validate_arg_type(arg['value'], expected_type, positional_index, function_name, is_in_group_arg)
+                            arg_errors = self._validate_arg_type(arg['value'], expected_type, positional_index, function_name, is_in_group_arg, allowed_fields)
                             errors.extend(arg_errors)
                     positional_index += 1
                 else:
@@ -567,13 +567,13 @@ class ExpressionValidator:
                     # 验证位置参数的类型
                     if positional_index < len(function_info['arg_types']):
                         expected_type = function_info['arg_types'][positional_index]
-                        arg_errors = self._validate_arg_type(arg, expected_type, positional_index, function_name, is_in_group_arg)
+                        arg_errors = self._validate_arg_type(arg, expected_type, positional_index, function_name, is_in_group_arg, allowed_fields)
                         errors.extend(arg_errors)
                 positional_index += 1
         
         return errors
     
-    def _validate_arg_type(self, arg: ASTNode, expected_type: str, arg_index: int, function_name: str, is_in_group_arg: bool = False) -> List[str]:
+    def _validate_arg_type(self, arg: ASTNode, expected_type: str, arg_index: int, function_name: str, is_in_group_arg: bool = False, allowed_fields: Optional[List[str]] = None) -> List[str]:
         """验证参数类型是否符合预期"""
         errors = []
         
@@ -600,6 +600,11 @@ class ExpressionValidator:
                 errors.append(f"参数 {arg_index+1} 应该是一个字段，但得到 {arg.node_type}")
             elif arg.node_type == 'field' and not self._is_valid_field(arg.value):
                 errors.append(f"无效的字段名: {arg.value}")
+            elif arg.node_type == 'field' and allowed_fields is not None:
+                # 严格校验字段是否存在于 allowed_fields 中
+                if arg.value not in allowed_fields:
+                    errors.append(f"Field '{arg.value}' not found in dataset")
+
         elif expected_type == 'category':
             if not function_name.startswith('group_'):
                 # 非group函数的category参数必须是category类型且在valid_categories中
@@ -611,7 +616,7 @@ class ExpressionValidator:
         
         return errors
     
-    def validate_ast(self, ast: Optional[ASTNode], is_in_group_arg: bool = False) -> List[str]:
+    def validate_ast(self, ast: Optional[ASTNode], is_in_group_arg: bool = False, allowed_fields: Optional[List[str]] = None) -> List[str]:
         """递归验证抽象语法树"""
         if not ast:
             return ["无法解析表达式"]
@@ -625,7 +630,7 @@ class ExpressionValidator:
             # 确定当前是否在group函数的参数链中
             current_in_group_arg = is_in_group_arg or is_group_function
             # 验证函数
-            function_errors = self.validate_function(ast, current_in_group_arg)
+            function_errors = self.validate_function(ast, current_in_group_arg, allowed_fields)
             errors.extend(function_errors)
             
             # 递归验证子节点时使用current_in_group_arg
@@ -633,31 +638,35 @@ class ExpressionValidator:
                 if isinstance(child, dict):
                     # 命名参数，验证其值
                     if 'value' in child and hasattr(child['value'], 'node_type'):
-                        child_errors = self.validate_ast(child['value'], current_in_group_arg)
+                        child_errors = self.validate_ast(child['value'], current_in_group_arg, allowed_fields)
                         errors.extend(child_errors)
                 elif hasattr(child, 'node_type'):
-                    child_errors = self.validate_ast(child, current_in_group_arg)
+                    child_errors = self.validate_ast(child, current_in_group_arg, allowed_fields)
                     errors.extend(child_errors)
         elif ast.node_type in ['unop', 'binop']:
             # 对操作符的子节点进行验证
             for child in ast.children:
                 if hasattr(child, 'node_type'):
-                    child_errors = self.validate_ast(child, is_in_group_arg)
+                    child_errors = self.validate_ast(child, is_in_group_arg, allowed_fields)
                     errors.extend(child_errors)
         elif ast.node_type == 'field':
             # 验证字段名
             if not self._is_valid_field(ast.value):
                 errors.append(f"无效的字段名: {ast.value}")
+            elif allowed_fields is not None:
+                # 严格校验字段是否存在于 allowed_fields 中
+                if ast.value not in allowed_fields:
+                    errors.append(f"Field '{ast.value}' not found in dataset")
         else:
             # 递归验证子节点
             for child in ast.children:
                 if isinstance(child, dict):
                     # 命名参数，验证其值
                     if 'value' in child and hasattr(child['value'], 'node_type'):
-                        child_errors = self.validate_ast(child['value'], is_in_group_arg)
+                        child_errors = self.validate_ast(child['value'], is_in_group_arg, allowed_fields)
                         errors.extend(child_errors)
                 elif hasattr(child, 'node_type'):
-                    child_errors = self.validate_ast(child, is_in_group_arg)
+                    child_errors = self.validate_ast(child, is_in_group_arg, allowed_fields)
                     errors.extend(child_errors)
         
         return errors
@@ -839,12 +848,13 @@ class ExpressionValidator:
                 
         return op_count, fields
 
-    def check_expression(self, expression: str) -> Dict[str, Any]:
+    def check_expression(self, expression: str, allowed_fields: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         检查表达式格式是否正确
         
         Args:
             expression: 要验证的表达式字符串
+            allowed_fields: 允许的字段列表（如果提供，将进行严格验证）
             
         Returns:
             包含验证结果的字典
@@ -891,7 +901,7 @@ class ExpressionValidator:
             ast = self.parser.parse(expression, lexer=self.lexer)
             
             # 验证AST
-            validation_errors = self.validate_ast(ast)
+            validation_errors = self.validate_ast(ast, allowed_fields=allowed_fields)
             
             # 合并所有错误
             all_errors = self.errors + validation_errors

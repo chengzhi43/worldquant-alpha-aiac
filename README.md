@@ -366,45 +366,83 @@ docker-compose down -v
 
 ### Trace Visualization (RD-Agent Style)
 
-每个挖掘任务的步骤完全透明：
+每个挖掘任务的步骤完全透明，对应 `TraceStepType` 枚举：
 
 ```
-Step 1: RAG_QUERY → 检索成功模式
-Step 2: HYPOTHESIS → 生成投资假设
-Step 3: CODE_GEN → 生成 Alpha 表达式
-Step 4: VALIDATE → 语法校验
-Step 5: SIMULATE → BRAIN 模拟
-Step 6: EVALUATE → 质量评估
+Step 1: RAG_QUERY     → 检索知识库成功模式
+Step 2: HYPOTHESIS    → 生成投资假设
+Step 3: CODE_GEN      → 生成 Alpha 表达式
+Step 4: VALIDATE      → 语法校验
+Step 5: SIMULATE      → BRAIN 平台模拟
+Step 6: SELF_CORRECT  → 失败时自我修正（可选）
+Step 7: EVALUATE      → 质量评估（Sharpe/Turnover/Fitness）
 ```
+
+### Evolution Loop (进化循环)
+
+Mining Agent 支持多轮进化挖掘：
+
+```
+Round 1: 初始策略 → 生成 Alpha → 分析结果 → 策略演进
+Round 2: 新策略 → 字段过滤 → 生成 Alpha → 分析结果 → 策略演进
+Round N: 累积学习 → 达到目标或最大迭代
+```
+
+关键组件：
+- **EvolutionStrategy**: 控制字段偏好、算子选择
+- **RoundResult**: 记录每轮成功/失败统计
+- **FeedbackAgent**: 从失败中学习优化策略
 
 ### CoSTEER Feedback Loop
 
-**短循环** (单任务内):
+**短循环** (单 Alpha 内):
 ```
-生成 → 模拟 → 失败 → Self-Correction → 重试
+生成 → 模拟 → 失败 → SELF_CORRECT → 重试（最多3次）
 ```
 
 **长循环** (跨任务):
 ```
-失败样本 → 聚类归因 → 更新知识库 → 优化 Prompt
+失败样本 → FeedbackAgent 聚类归因 → 更新 KnowledgeEntry → 优化 Prompt
 ```
+
+### Knowledge Base (知识库)
+
+知识库类型（`KnowledgeEntryType`）：
+- **SUCCESS_PATTERN**: 成功的 Alpha 模式
+- **FAILURE_PITFALL**: 失败教训
+- **FIELD_BLACKLIST**: 问题字段黑名单
+- **OPERATOR_STAT**: 算子使用统计
 
 ### Human-in-the-Loop
 
-- 任意步骤可暂停/调整
-- 👍/👎 反馈直接影响知识库
-- 交互模式：每步确认
+- 任意步骤可暂停/调整（`AgentMode.INTERACTIVE`）
+- 👍/👎 反馈直接影响知识库（`HumanFeedback`）
+- Alpha 优化候选自动识别
 
 ---
 
 ## 📈 Roadmap
 
-- [x] Phase 1: 基础骨架 (Backend + Frontend + DB)
-- [x] Phase 2: Trace 可视化 + Mining Agent 核心
-- [x] Phase 3: Brain 平台同步与集成
-- [ ] Phase 4: Celery 异步任务队列优化
-- [ ] Phase 5: 多区域并行挖掘
-- [ ] Phase 6: 高级分析仪表盘
+### 已完成 ✅
+
+- [x] **Phase 1**: 基础骨架 (Backend + Frontend + DB + SQLAlchemy 自动迁移)
+- [x] **Phase 2**: Trace 可视化 + Mining Agent 核心
+- [x] **Phase 3**: Brain 平台同步与集成 (Datasets, Operators, Fields, Alphas)
+- [x] **Phase 4**: Celery 异步任务队列 (Mining, Sync, Feedback 定时任务)
+- [x] **Phase 5**: 多区域支持 (USA, CHN, ASI, EUR 等)
+- [x] **Phase 6**: LangGraph 工作流 + Evolution Strategy
+- [x] **Phase 7**: Knowledge Base 知识库系统
+
+### 进行中 🔄
+
+- [ ] **Phase 8**: 高级分析仪表盘 (PnL 曲线, 区域对比)
+- [ ] **Phase 9**: Alpha 优化链 (Chain-of-Alpha)
+
+### 规划中 📋
+
+- [ ] **Phase 10**: 多任务并行挖掘调度
+- [ ] **Phase 11**: 模板库扩展 + RL 策略学习
+- [ ] **Phase 12**: 生产环境部署优化 (监控, 日志, 告警)
 
 ---
 

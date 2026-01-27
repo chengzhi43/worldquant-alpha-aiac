@@ -1,31 +1,653 @@
 """
 Prompt Templates for Alpha Mining
-Based on Alpha-GPT paradigm with CoSTEER enhancements
+
+Design Principles:
+1. Avoid Bias: Don't suggest certain approaches are inherently better
+2. Structured Output: Clear JSON schemas for reliable parsing
+3. Separation of Concerns: Hypothesis generation vs Expression construction
+4. Configurable: Strategy parameters injected at runtime
+5. Factual Context: Provide data, not opinions
+
+Reference: Alpha-GPT, RD-Agent CoSTEER, Chain-of-Alpha
 """
 
-# =============================================================================
-# MINING AGENT PROMPTS
-# =============================================================================
+from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+
 
 # =============================================================================
-# MINING AGENT PROMPTS
+# DATA CLASSES FOR TYPE SAFETY
 # =============================================================================
 
-ALPHA_GENERATION_SYSTEM = """You are a quantitative researcher AI.
-Your goal is to generate hypothesis-driven Alpha expressions based on financial data.
+@dataclass
+class PromptContext:
+    """Structured context for prompt rendering."""
+    dataset_id: str = ""
+    dataset_description: str = ""
+    dataset_category: str = ""
+    region: str = "USA"
+    universe: str = "TOP3000"
+    
+    # Available data (will be JSON serialized)
+    fields: List[Dict] = field(default_factory=list)
+    operators: List[Dict] = field(default_factory=list)
+    
+    # Knowledge base context
+    success_patterns: List[Dict] = field(default_factory=list)
+    failure_pitfalls: List[Dict] = field(default_factory=list)
+    
+    # Strategy guidance (from StrategyAgent)
+    preferred_fields: List[str] = field(default_factory=list)
+    avoid_fields: List[str] = field(default_factory=list)
+    focus_hypotheses: List[str] = field(default_factory=list)
+    avoid_patterns: List[str] = field(default_factory=list)
+    
+    # Generation parameters
+    num_alphas: int = 5
+    exploration_weight: float = 0.5  # 0=pure exploitation, 1=pure exploration
 
-## Research Standards
-1. **Hypothesis-Driven**: Every Alpha must stem from a coherent economic rationale.
-2. **Robustness**: Prefer simple, explainable logic over complex overfitting.
-3. **Validity**: Strictly adhere to the platform's operator and field syntax.
-4. **No Look-ahead**: Ensure no future data usage.
 
-## Output Format
-JSON structure containing:
-- `expression`: The Alpha code.
-- `hypothesis`: The economic reasoning.
-- `explanation`: Brief logic description.
-"""
+# =============================================================================
+# PROMPT BUILDERS (Functional Style for Testability)
+# =============================================================================
+
+def build_fields_context(fields: List[Dict], max_fields: int = 30) -> str:
+    """Build concise field reference, avoiding overwhelming the model."""
+    if not fields:
+        return "No fields available."
+    
+    # Group by category for clarity
+    by_category: Dict[str, List[str]] = {}
+    for f in fields[:max_fields]:
+        cat = f.get("category", "Other")
+        if cat not in by_category:
+            by_category[cat] = []
+        field_id = f.get("id", f.get("name", "unknown"))
+        by_category[cat].append(field_id)
+    
+    lines = []
+    for cat, field_ids in sorted(by_category.items()):
+        sample = ", ".join(field_ids[:8])
+        if len(field_ids) > 8:
+            sample += f" ... (+{len(field_ids) - 8} more)"
+        lines.append(f"- {cat}: {sample}")
+    
+    return "\n".join(lines)
+
+
+def build_operators_context(operators: List[Dict], max_ops: int = 40) -> str:
+    """Build operator reference grouped by category."""
+    if not operators:
+        return "Use standard operators."
+    
+    by_category: Dict[str, List[str]] = {}
+    for op in operators[:max_ops]:
+        cat = op.get("category", "Other")
+        if cat not in by_category:
+            by_category[cat] = []
+        op_name = op.get("name", op.get("id", "unknown"))
+        by_category[cat].append(op_name)
+    
+    lines = []
+    for cat, op_names in sorted(by_category.items()):
+        lines.append(f"- {cat}: {', '.join(op_names[:10])}")
+    
+    return "\n".join(lines)
+
+
+def build_patterns_context(patterns: List[Dict], label: str, max_items: int = 5) -> str:
+    """Build pattern reference without implying they must be followed."""
+    if not patterns:
+        return f"No {label} recorded yet."
+    
+    lines = []
+    for p in patterns[:max_items]:
+        pattern = p.get("pattern", p.get("template", ""))
+        desc = p.get("description", "")
+        if pattern:
+            lines.append(f"- `{pattern}`: {desc[:80]}")
+    
+    return "\n".join(lines) if lines else f"No {label} recorded yet."
+
+
+def build_strategy_constraints(ctx: PromptContext) -> str:
+    """Build strategy-driven constraints without being prescriptive."""
+    constraints = []
+    
+    if ctx.avoid_fields:
+        constraints.append(
+            f"Fields with recent issues (consider alternatives): {', '.join(ctx.avoid_fields[:5])}"
+        )
+    
+    if ctx.avoid_patterns:
+        constraints.append(
+            f"Patterns that underperformed recently: {'; '.join(ctx.avoid_patterns[:3])}"
+        )
+    
+    # Syntax constraints (always apply)
+    constraints.extend([
+        "Lookback windows must be positive integers",
+        "Maximum 3 distinct fields per expression",
+        "Maximum 8 operators per expression",
+        "Ensure no look-ahead bias (no future data access)"
+    ])
+    
+    return "\n".join(f"- {c}" for c in constraints)
+
+
+# =============================================================================
+# ALPHA GENERATION PROMPTS (Refactored)
+# =============================================================================
+
+ALPHA_GENERATION_SYSTEM = """You are a quantitative research assistant that generates alpha expressions.
+
+Your role is to:
+1. Translate investment hypotheses into mathematical expressions
+2. Use only the provided fields and operators
+3. Ensure syntactic correctness and logical coherence
+
+Guidelines:
+- Focus on clarity and simplicity over complexity
+- Each expression should represent a testable hypothesis
+- Provide clear reasoning for your choices
+
+Output must be valid JSON matching the specified schema."""
+
+
+def build_alpha_generation_prompt(ctx: PromptContext) -> str:
+    """Build user prompt for alpha generation with full context."""
+    
+    # Build strategy section based on exploration weight
+    strategy_section = ""
+    if ctx.exploration_weight > 0.7:
+        strategy_section = """
+**Exploration Mode**: Prioritize novel combinations and underexplored fields.
+Consider unconventional approaches that differ from known patterns."""
+    elif ctx.exploration_weight < 0.3:
+        strategy_section = """
+**Exploitation Mode**: Build upon patterns that have shown promise.
+Focus on variations and refinements of successful approaches."""
+    else:
+        strategy_section = """
+**Balanced Mode**: Mix novel explorations with refinements of known approaches."""
+    
+    # Build hypothesis guidance if available
+    hypothesis_guidance = ""
+    if ctx.focus_hypotheses:
+        hypothesis_guidance = f"""
+**Suggested Research Directions** (for reference, not requirements):
+{chr(10).join(f'- {h}' for h in ctx.focus_hypotheses[:5])}"""
+    
+    # Build preferred fields section if available
+    preferred_section = ""
+    if ctx.preferred_fields:
+        preferred_section = f"""
+**Fields with Recent Success** (consider using):
+{', '.join(ctx.preferred_fields[:10])}"""
+    
+    return f"""## Dataset Context
+
+**Dataset**: {ctx.dataset_id}
+**Description**: {ctx.dataset_description or 'Not provided'}
+**Category**: {ctx.dataset_category or 'General'}
+**Region**: {ctx.region} | **Universe**: {ctx.universe}
+
+## Available Data
+
+**Fields** (grouped by category):
+{build_fields_context(ctx.fields)}
+{preferred_section}
+
+**Operators** (grouped by category):
+{build_operators_context(ctx.operators)}
+
+## Historical Context
+
+**Patterns that have worked**:
+{build_patterns_context(ctx.success_patterns, "success patterns")}
+
+**Known pitfalls to be aware of**:
+{build_patterns_context(ctx.failure_pitfalls, "pitfalls")}
+
+## Constraints
+
+{build_strategy_constraints(ctx)}
+
+## Strategy
+{strategy_section}
+{hypothesis_guidance}
+
+## Task
+
+Generate {ctx.num_alphas} distinct alpha expressions. For each:
+1. State a clear investment hypothesis
+2. Construct an expression that tests this hypothesis
+3. Explain the economic logic
+
+**Output Schema** (JSON):
+```json
+{{
+  "alphas": [
+    {{
+      "hypothesis": "Clear statement of the investment thesis being tested",
+      "expression": "Valid expression using provided fields and operators",
+      "explanation": "Why this logic might capture market inefficiency",
+      "key_fields": ["field1", "field2"],
+      "complexity": "low|medium|high"
+    }}
+  ]
+}}
+```"""
+
+
+# =============================================================================
+# HYPOTHESIS GENERATION PROMPTS
+# =============================================================================
+
+HYPOTHESIS_SYSTEM = """You are a quantitative research strategist.
+
+Your role is to generate testable investment hypotheses based on:
+1. The characteristics of the available data
+2. General financial theory and market microstructure
+3. Historical patterns that have shown promise
+
+Guidelines:
+- Each hypothesis should be specific and testable
+- Avoid vague statements; be precise about the expected relationship
+- Consider both momentum and mean-reversion effects
+- Think about what market behavior the data might capture
+
+Output must be valid JSON."""
+
+
+def build_hypothesis_prompt(ctx: PromptContext) -> str:
+    """Build prompt for hypothesis generation."""
+    
+    exploration_guidance = ""
+    if ctx.exploration_weight > 0.6:
+        exploration_guidance = """
+**Focus**: Generate diverse hypotheses exploring different aspects of the data.
+Consider unconventional relationships and cross-field interactions."""
+    else:
+        exploration_guidance = """
+**Focus**: Generate hypotheses that build upon successful patterns.
+Refine and extend approaches that have shown promise."""
+    
+    return f"""## Dataset Analysis
+
+**Dataset**: {ctx.dataset_id}
+**Category**: {ctx.dataset_category}
+**Description**: {ctx.dataset_description}
+
+**Core Fields** (sample):
+{build_fields_context(ctx.fields, max_fields=20)}
+
+## Historical Context
+
+**Successful approaches**:
+{build_patterns_context(ctx.success_patterns, "patterns")}
+
+**Approaches that failed**:
+{build_patterns_context(ctx.failure_pitfalls, "pitfalls")}
+
+## Strategy
+{exploration_guidance}
+
+## Task
+
+Generate 3-5 investment hypotheses suitable for this dataset.
+
+**Output Schema** (JSON):
+```json
+{{
+  "hypotheses": [
+    {{
+      "idea": "Clear statement of the hypothesis",
+      "rationale": "Economic or behavioral reasoning",
+      "key_fields": ["relevant", "fields"],
+      "suggested_operators": ["ts_rank", "ts_delta"],
+      "expected_behavior": "momentum|mean_reversion|other",
+      "confidence": "high|medium|low"
+    }}
+  ]
+}}
+```"""
+
+
+# =============================================================================
+# CONCEPT DISTILLATION PROMPTS
+# =============================================================================
+
+DISTILL_SYSTEM = """You are a data categorization specialist.
+
+Your role is to identify the most relevant field categories for alpha research
+based on the dataset description and successful historical patterns.
+
+Be objective in your selection - choose categories that contain
+the most informative signals, not those that sound appealing."""
+
+
+def build_distill_prompt(ctx: PromptContext, field_categories: Dict[str, List[str]]) -> str:
+    """Build prompt for concept distillation."""
+    
+    categories_text = []
+    for cat, fields in sorted(field_categories.items()):
+        sample = ", ".join(fields[:5])
+        if len(fields) > 5:
+            sample += f" ... (+{len(fields) - 5} more)"
+        categories_text.append(f"- **{cat}** ({len(fields)} fields): {sample}")
+    
+    return f"""## Dataset Context
+
+**Dataset**: {ctx.dataset_id}
+**Description**: {ctx.dataset_description}
+**Category**: {ctx.dataset_category}
+
+## Successful Patterns Reference
+{build_patterns_context(ctx.success_patterns, "patterns")}
+
+## Available Field Categories
+
+{chr(10).join(categories_text)}
+
+## Task
+
+Select 3-5 field categories most likely to contain useful signals.
+
+**Selection Criteria**:
+1. Relevance to dataset description
+2. Alignment with successful patterns
+3. Information density (prefer specific categories over "General")
+
+**Output Schema** (JSON):
+```json
+{{
+  "selected_concepts": ["Category1", "Category2", "Category3"],
+  "reasoning": "Brief explanation of selection logic"
+}}
+```
+
+**Important**: Use exact category names from the list above."""
+
+
+# =============================================================================
+# SELF-CORRECTION PROMPTS
+# =============================================================================
+
+SELF_CORRECT_SYSTEM = """You are an alpha expression debugger.
+
+Your role is to:
+1. Analyze why an expression failed
+2. Identify the specific issue (syntax, field name, operator usage)
+3. Propose a corrected version
+
+Be precise in your diagnosis and fix only what is broken."""
+
+
+def build_self_correct_prompt(
+    expression: str,
+    error_message: str,
+    error_type: str,
+    available_fields: List[str]
+) -> str:
+    """Build prompt for self-correction."""
+    
+    return f"""## Failed Expression
+
+```
+{expression}
+```
+
+## Error Information
+
+**Type**: {error_type}
+**Message**: {error_message}
+
+## Available Fields (for reference)
+
+{', '.join(available_fields[:30])}
+
+## Task
+
+1. Diagnose the specific cause of failure
+2. Propose a minimal fix (change only what is necessary)
+3. Verify the fix addresses the error
+
+**Output Schema** (JSON):
+```json
+{{
+  "diagnosis": "Specific cause of the error",
+  "fix_type": "field_name|syntax|operator|parameter",
+  "fixed_expression": "Corrected expression",
+  "changes_made": "Description of what was changed"
+}}
+```"""
+
+
+# =============================================================================
+# OPTIMIZATION PROMPTS (Chain-of-Alpha Style)
+# =============================================================================
+
+OPTIMIZATION_SYSTEM = """You are an alpha optimization specialist.
+
+Your role is to improve weak alphas based on backtest feedback.
+Focus on targeted modifications rather than complete rewrites.
+
+Optimization strategies:
+1. Window adjustment: Different lookback periods may capture different signals
+2. Normalization: rank(), zscore() can improve cross-sectional comparability
+3. Sign flip: Some signals work in reverse
+4. Decay adjustment: Smoothing can improve stability
+5. Neutralization: Risk factor removal can isolate pure alpha"""
+
+
+def build_optimization_prompt(
+    expression: str,
+    metrics: Dict,
+    failed_tests: List[str],
+    optimization_reason: str
+) -> str:
+    """Build prompt for alpha optimization."""
+    
+    return f"""## Alpha to Optimize
+
+```
+{expression}
+```
+
+## Backtest Results
+
+- **Train Sharpe**: {metrics.get('train_sharpe', 'N/A')}
+- **Test Sharpe**: {metrics.get('test_sharpe', 'N/A')}
+- **Fitness**: {metrics.get('fitness', 'N/A')}
+- **Turnover**: {metrics.get('turnover', 'N/A')}
+- **Risk-Neutralized Sharpe**: {metrics.get('rn_sharpe', 'N/A')}
+- **Investability-Constrained Sharpe**: {metrics.get('invest_sharpe', 'N/A')}
+
+## Issues Identified
+
+**Failed Tests**: {', '.join(failed_tests) if failed_tests else 'None'}
+**Optimization Trigger**: {optimization_reason}
+
+## Task
+
+Generate 5-8 targeted modifications that might improve this alpha.
+Focus on the specific issues identified.
+
+**Output Schema** (JSON):
+```json
+{{
+  "analysis": "Brief analysis of what might be wrong",
+  "modifications": [
+    {{
+      "type": "window|normalization|sign|structure",
+      "expression": "Modified expression",
+      "rationale": "Why this modification might help",
+      "targets_issue": "Which identified issue this addresses"
+    }}
+  ]
+}}
+```"""
+
+
+# =============================================================================
+# ROUND ANALYSIS PROMPTS (For Strategy Agent)
+# =============================================================================
+
+ROUND_ANALYSIS_SYSTEM = """You are an alpha mining strategy analyst.
+
+Your role is to analyze mining results and recommend adjustments for the next round.
+Be objective and data-driven in your analysis.
+
+Focus on:
+1. Pattern extraction from successes (what worked)
+2. Root cause analysis of failures (what went wrong)
+3. Actionable recommendations (specific next steps)
+
+Avoid:
+- Vague suggestions ("try different approaches")
+- Unfounded optimism or pessimism
+- Recommendations without supporting evidence"""
+
+
+def build_round_analysis_prompt(
+    iteration: int,
+    max_iterations: int,
+    metrics_summary: str,
+    success_examples: str,
+    failure_examples: str,
+    dataset_id: str,
+    region: str,
+    cumulative_success: int,
+    target_goal: int
+) -> str:
+    """Build prompt for round analysis and strategy generation."""
+    
+    progress_pct = (cumulative_success / max(target_goal, 1)) * 100
+    remaining_rounds = max_iterations - iteration
+    
+    return f"""## Round {iteration} Analysis
+
+### Progress
+- **Cumulative Success**: {cumulative_success}/{target_goal} ({progress_pct:.0f}%)
+- **Remaining Rounds**: {remaining_rounds}
+- **Dataset**: {dataset_id} | **Region**: {region}
+
+### This Round's Metrics
+{metrics_summary}
+
+### Success Examples ({len(success_examples.split(chr(10))) if success_examples else 0})
+{success_examples if success_examples else "No successes this round."}
+
+### Failure Examples
+{failure_examples if failure_examples else "No failures recorded."}
+
+## Task
+
+Analyze results and generate strategy for Round {iteration + 1}.
+
+**Output Schema** (JSON):
+```json
+{{
+  "analysis": {{
+    "key_findings": ["Finding 1", "Finding 2"],
+    "success_patterns": ["Pattern extracted from successes"],
+    "failure_patterns": ["Common failure modes"],
+    "bottleneck": "Main obstacle to progress"
+  }},
+  "strategy": {{
+    "temperature": 0.7,
+    "exploration_weight": 0.5,
+    "focus_hypotheses": ["Directions to explore"],
+    "avoid_patterns": ["Patterns to avoid"],
+    "preferred_fields": ["Fields to prioritize"],
+    "avoid_fields": ["Fields with issues"],
+    "action_summary": "Concise strategy description",
+    "reasoning": "Logic behind recommendations"
+  }},
+  "optimization_targets": [
+    {{
+      "expression": "Alpha to optimize (if any)",
+      "reason": "Why this alpha is worth optimizing"
+    }}
+  ]
+}}
+```"""
+
+
+# =============================================================================
+# BACKWARDS COMPATIBILITY TEMPLATES
+# =============================================================================
+
+# Legacy templates for gradual migration
+# These use string formatting directly (not the builder functions)
+
+DISTILL_USER = """## Dataset Context
+
+**Dataset**: {dataset_id}
+**Description**: {description}
+**Category**: {category}
+
+## Successful Patterns Reference
+{success_patterns}
+
+## Available Field Categories
+{field_categories}
+
+## Task
+
+Select 3-5 field categories most likely to contain useful signals.
+
+**Selection Criteria**:
+1. Relevance to dataset description
+2. Alignment with successful patterns
+3. Information density (prefer specific categories over "General")
+
+**Output Schema** (JSON):
+```json
+{{
+  "selected_concepts": ["Category1", "Category2", "Category3"],
+  "reasoning": "Brief explanation of selection logic"
+}}
+```
+
+**Important**: Use exact category names from the list above."""
+
+
+HYPOTHESIS_USER = """## Dataset Analysis
+
+**Dataset**: {dataset_id}
+**Category**: {category} {subcategory}
+**Description**: {description}
+
+**Core Fields** (Top 20):
+{fields_summary}
+
+## Success Patterns Reference
+{success_patterns}
+
+## Exploration Task
+**Fields to explore**:
+{exploration_fields}
+
+## Task
+
+Generate 3-5 investment hypotheses based on the above information.
+
+**Output Schema** (JSON):
+```json
+{{
+  "hypotheses": [
+    {{
+      "idea": "Clear hypothesis statement",
+      "rationale": "Economic/behavioral reasoning",
+      "key_fields": ["field1", "field2"],
+      "suggested_operators": ["ts_rank", "ts_delta"]
+    }}
+  ]
+}}
+```"""
+
 
 ALPHA_GENERATION_USER = """## Research Context
 
@@ -34,6 +656,7 @@ ALPHA_GENERATION_USER = """## Research Context
 **Universe**: {universe}
 
 ## Available Data
+
 **Fields**:
 {fields_json}
 
@@ -44,12 +667,12 @@ ALPHA_GENERATION_USER = """## Research Context
 {negative_constraints}
 
 **Syntax Enforcement**:
-- Lookback windows must be integers (e.g., `20`, not `20.0`).
-- Use keyword args where required (e.g., `ts_rank(x, d, constant=0)`).
+- Lookback windows must be integers (e.g., 20, not 20.0)
 - Max operators: 7
 - Max fields: 3
 
-## Knowledge Base (Context)
+## Knowledge Base Context
+
 **Hypotheses**:
 {hypotheses_context}
 
@@ -57,280 +680,198 @@ ALPHA_GENERATION_USER = """## Research Context
 {few_shot_examples}
 
 ## Task
-Generate {num_alphas} distinct Alpha expressions derived from the provided hypotheses.
 
-Output JSON:
+Generate {num_alphas} distinct Alpha expressions.
+
+**Output Schema** (JSON):
 ```json
 {{
   "alphas": [
     {{
       "expression": "rank(ts_delta(close, 5))",
       "hypothesis": "Short-term mean reversion...",
-      "explanation": "captures price reversal..."
+      "explanation": "Captures price reversal..."
     }}
   ]
 }}
-```
-"""
+```"""
+
 
 # =============================================================================
-# HYPOTHESIS GENERATION
+# FAILURE ANALYSIS (Legacy)
 # =============================================================================
 
-HYPOTHESIS_SYSTEM = """你是一位资深量化策略研究员，擅长从数据特征中提炼投资假设。"""
+FAILURE_ANALYSIS_SYSTEM = """You are an alpha mining process optimization expert.
 
-HYPOTHESIS_USER = """## 数据集分析
+Your role is to analyze failed alpha expressions and extract actionable insights
+that can improve future generation attempts.
 
-**数据集**: {dataset_id}
-**类别**: {category} {subcategory}
-**描述**: {description}
+Focus on:
+1. Identifying common failure patterns
+2. Extracting reusable avoidance rules
+3. Suggesting prompt improvements"""
 
-**核心可用字段 (Top 20)**:
-{fields_summary}
+FAILURE_ANALYSIS_USER = """## Today's Failures ({count} total)
 
-## 成功模式参考 (Exploitation)
-**利用历史高分模式进行微调**:
-{success_patterns}
-
-## 探索任务 (Exploration)
-**强制探索以下随机/冷门字段**:
-{exploration_fields}
-
-## 任务
-基于以上信息，生成 3-5 个投资假设。请采用 **混合策略 (Hybrid Strategy)**:
-
-1. **稳健型 (Exploitation)**: 生成 1-2 个基于“成功模式”的假设，保证基础得分。
-2. **探索型 (Exploration)**: 生成 1-2 个基于“探索任务”中字段的创新假设，寻找新 Alpha。
-
-输出 JSON 格式:
-```json
-{{
-  "hypotheses": [
-    {{
-      "idea": "假设描述 (注明 [Exploit] 或 [Explore])",
-      "rationale": "理论依据 (特别是探索型假设的经济学逻辑)",
-      "key_fields": ["field1", "field2"],
-      "suggested_operators": ["ts_rank", "ts_corr"]
-    }}
-  ]
-}}
-```
-"""
-
-# =============================================================================
-# CONCEPT DISTILLATION PROMPT
-# =============================================================================
-
-DISTILL_SYSTEM = """你是一位资深量化数据专家。你需要从海量数据字段中提炼出最核心的投资概念。"""
-
-DISTILL_USER = """## 数据集背景
-**数据集**: {dataset_id}
-**描述**: {description}
-**类别**: {category}
-
-## 成功模式参考
-{success_patterns}
-
-## 字段概览 (按类别聚类)
-{field_categories}
-
-## 任务
-该数据集包含大量字段。为了避免噪音，请根据数据集描述和成功模式，从 **上方列出的字段类别** 中挑选出 **3-5 个最相关** 的类别 (Concepts)。
-
-**重要约束**:
-1. **严格使用列表中的类别名称** (Available Categories)，**禁止发明新的类别名**。
-2. 如果绝大多数字段都在 "General" 或 "Unknown" 类，请包含它们，否则无法检索到字段。
-3. 请优先选择包含丰富信息量的特定类别 (如 "Analyst Estimates")。
-
-输出 JSON 格式:
-```json
-{{
-  "selected_concepts": ["Volatility", "Momentum", "General"],
-  "reasoning": "数据集描述强调了高频波动特性..."
-}}
-```
-"""
-
-# =============================================================================
-# SELF-CORRECTION PROMPT
-# =============================================================================
-
-SELF_CORRECT_SYSTEM = """你是一位 Alpha 表达式调试专家。你需要分析错误原因并修复表达式。"""
-
-SELF_CORRECT_USER = """## 错误的表达式
-
-```
-{expression}
-```
-
-## 错误信息
-{error_message}
-
-## 错误类型
-{error_type}
-
-## 可用字段 (参考)
-{available_fields}
-
-## 任务
-1. 分析错误原因
-2. 提供修复后的表达式
-3. 解释修改内容
-
-输出 JSON 格式:
-```json
-{{
-  "analysis": "错误原因分析",
-  "fixed_expression": "修复后的表达式",
-  "changes": "修改说明"
-}}
-```
-"""
-
-# =============================================================================
-# LOGIC EXPLANATION
-# =============================================================================
-
-EXPLAIN_ALPHA_SYSTEM = """你是一位量化投资专家，擅长解释 Alpha 因子的经济学含义。"""
-
-EXPLAIN_ALPHA_USER = """## Alpha 表达式
-
-```
-{expression}
-```
-
-## 使用的字段
-{fields_used}
-
-## 使用的算子
-{operators_used}
-
-## 模拟结果
-- Sharpe Ratio: {sharpe}
-- Returns: {returns}%
-- Turnover: {turnover}
-
-## 任务
-用通俗易懂的语言解释这个 Alpha 因子：
-1. 它捕捉了什么市场现象？
-2. 为什么这个逻辑可能有效？
-3. 潜在风险是什么？
-
-输出简洁的中文解释 (2-3 句话)。
-"""
-
-# =============================================================================
-# FEEDBACK ANALYSIS
-# =============================================================================
-
-FAILURE_ANALYSIS_SYSTEM = """你是一位 Alpha 挖掘流程优化专家，擅长从失败案例中总结教训。"""
-
-FAILURE_ANALYSIS_USER = """## 今日失败样本 ({count} 个)
-
-### 按错误类型分布
+### Error Distribution
 {error_distribution}
 
-### 代表性失败案例
+### Representative Failures
 {sample_failures}
 
-## 任务
-1. 分析主要失败模式
-2. 提取可复用的避坑规则
-3. 建议 Prompt 优化方向
+## Task
 
-输出 JSON 格式:
+1. Analyze the main failure patterns
+2. Extract reusable avoidance rules
+3. Suggest prompt optimization directions
+
+**Output Schema** (JSON):
 ```json
 {{
   "patterns": [
     {{
-      "pattern": "错误模式描述",
+      "pattern": "Failure pattern description",
       "frequency": 0.3,
-      "recommendation": "建议规避策略"
+      "recommendation": "How to avoid this"
     }}
   ],
-  "prompt_improvements": ["改进点1", "改进点2"]
+  "prompt_improvements": ["Improvement 1", "Improvement 2"]
 }}
-```
-"""
+```"""
 
 # =============================================================================
-# ROUND ANALYSIS (EVOLUTION LOOP) - Enhanced with RD-Agent/Alpha-GPT insights
+# ROUND ANALYSIS (Legacy)
 # =============================================================================
 
-ROUND_ANALYSIS_SYSTEM = """你是一位 Alpha 挖掘策略专家，擅长从一轮挖掘结果中提炼深度洞察，指导下一轮迭代。
+ROUND_ANALYSIS_USER = """## Round {iteration} Analysis
 
-核心能力（参考 RD-Agent/Alpha-GPT/Chain-of-Alpha 论文）：
-1. **结构化模式提取**: 从成功Alpha中提取可复用的算子组合模板
-2. **失败根因分析**: 区分语法错误、字段问题、逻辑缺陷、质量不达标
-3. **假设演进建议**: 基于结果推断哪些投资假设值得深入探索
-4. **参数敏感性洞察**: 识别对窗口大小、衰减参数等敏感的模式
+### Progress
+- **Cumulative Success**: {cumulative_success}/{target_goal}
+- **Remaining Rounds**: {remaining_rounds}
+- **Dataset**: {dataset_id} | **Region**: {region}
 
-目标：生成可直接指导下一轮生成的结构化知识，而非泛泛的建议。"""
+### This Round's Metrics
+{metrics_summary}
 
-ROUND_ANALYSIS_USER = """## 本轮挖掘结果 (Round {iteration})
-
-### 成功案例 (Success: {success_count})
+### Success Examples ({success_count})
 {success_examples}
 
-### 失败案例 (Failures: {failure_count})
+### Failure Examples ({failure_count})
 {failure_examples}
 
-### 任务上下文
-数据集: {dataset_id}
-区域: {region}
+## Task
 
-## 任务
-请深度分析以上结果，提炼出对下一轮挖掘有帮助的结构化知识：
+Analyze results and generate insights for the next round.
 
-1. **成功模式 (Patterns)**: 
-   - 提取具体的算子组合模板（如: `ts_rank(X, N) * ts_decay_linear(Y, M)`）
-   - 分析为什么这个模式有效（经济逻辑）
-   - 给出可泛化的变体建议
-
-2. **失败陷阱 (Pitfalls)**: 
-   - 识别导致失败的具体原因类型
-   - 提供明确的避免建议
-
-3. **字段洞察 (Field Insights)**:
-   - 哪些字段在成功案例中频繁出现
-   - 哪些字段导致了问题
-
-4. **假设演进 (Hypothesis Evolution)**:
-   - 哪些投资假设方向值得继续探索
-   - 哪些假设应该放弃或调整
-
-输出 JSON 格式:
+**Output Schema** (JSON):
 ```json
 {{
   "new_patterns": [
     {{
-      "pattern": "ts_rank(returns, 20) * ts_decay_linear(volume, 10)",
-      "template": "ts_rank(MOMENTUM_FIELD, N) * ts_decay_linear(VOLUME_FIELD, M)",
-      "description": "动量与成交量结合，短期动量(N=10-30)配合中期成交量衰减(M=5-15)",
-      "economic_logic": "价量配合反映市场认可度",
-      "variants": ["可尝试ts_corr替代乘法", "可加入波动率归一化"],
+      "pattern": "Identified successful pattern",
+      "template": "Generalized template",
+      "description": "Description",
+      "economic_logic": "Why it works",
+      "variants": ["Variant suggestions"],
       "score": 0.8
     }}
   ],
   "new_pitfalls": [
     {{
-      "pattern": "ts_zscore(fundamental_data)",
-      "error_type": "DATA_QUALITY",
-      "description": "基础数据缺失值过多导致 zscore 异常",
-      "recommendation": "使用前先用 ts_mean 填充或改用 rank",
-      "severity": "high"
+      "pattern": "Problematic pattern",
+      "error_type": "Error category",
+      "description": "What went wrong",
+      "recommendation": "How to avoid",
+      "severity": "high|medium|low"
     }}
   ],
   "field_insights": {{
-    "effective_fields": ["returns", "volume", "close"],
-    "problematic_fields": ["some_sparse_field"],
-    "unexplored_fields": ["建议下轮尝试的字段"]
+    "effective_fields": ["field1", "field2"],
+    "problematic_fields": ["field3"],
+    "unexplored_fields": ["field4"]
   }},
   "hypothesis_evolution": {{
-    "promising_directions": ["动量-成交量交互", "波动率调整收益"],
-    "abandon_directions": ["纯基本面因子在此数据集效果差"],
-    "pivot_suggestions": ["从绝对值转向相对排名", "增加时序特征"]
+    "promising_directions": ["Direction 1"],
+    "abandon_directions": ["Direction 2"],
+    "pivot_suggestions": ["Suggestion 1"]
   }}
 }}
+```"""
+
+# =============================================================================
+# SELF CORRECTION (Legacy)
+# =============================================================================
+
+SELF_CORRECT_USER = """## Failed Expression
+
 ```
-"""
+{expression}
+```
+
+## Error Information
+
+**Type**: {error_type}
+**Message**: {error_message}
+
+## Available Fields (for reference)
+{available_fields}
+
+## Task
+
+1. Diagnose the specific cause of failure
+2. Propose a minimal fix
+3. Verify the fix addresses the error
+
+**Output Schema** (JSON):
+```json
+{{
+  "analysis": "Cause of the error",
+  "fixed_expression": "Corrected expression",
+  "changes": "What was changed"
+}}
+```"""
+
+
+# =============================================================================
+# PROMPT TEMPLATE REGISTRY (For Dynamic Selection)
+# =============================================================================
+
+class PromptRegistry:
+    """Registry for prompt templates, enabling runtime selection and customization."""
+    
+    _system_prompts = {
+        "alpha_generation": ALPHA_GENERATION_SYSTEM,
+        "hypothesis": HYPOTHESIS_SYSTEM,
+        "distill": DISTILL_SYSTEM,
+        "self_correct": SELF_CORRECT_SYSTEM,
+        "optimization": OPTIMIZATION_SYSTEM,
+        "round_analysis": ROUND_ANALYSIS_SYSTEM,
+    }
+    
+    _user_prompt_builders = {
+        "alpha_generation": build_alpha_generation_prompt,
+        "hypothesis": build_hypothesis_prompt,
+        "self_correct": build_self_correct_prompt,
+        "optimization": build_optimization_prompt,
+        "round_analysis": build_round_analysis_prompt,
+    }
+    
+    @classmethod
+    def get_system_prompt(cls, prompt_type: str) -> str:
+        """Get system prompt by type."""
+        return cls._system_prompts.get(prompt_type, "")
+    
+    @classmethod
+    def get_user_prompt_builder(cls, prompt_type: str):
+        """Get user prompt builder function by type."""
+        return cls._user_prompt_builders.get(prompt_type)
+    
+    @classmethod
+    def register_system_prompt(cls, name: str, prompt: str):
+        """Register custom system prompt."""
+        cls._system_prompts[name] = prompt
+    
+    @classmethod
+    def register_user_prompt_builder(cls, name: str, builder):
+        """Register custom user prompt builder."""
+        cls._user_prompt_builders[name] = builder

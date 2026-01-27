@@ -1,39 +1,50 @@
 """
-Mining Agent - High-level Entry Point
-Wraps LangGraph workflow with backward-compatible interface
+Mining Agent - High-level Entry Point for Alpha Mining
 
 This module provides:
 1. Backward-compatible interface (run_mining_iteration)
-2. Clean access to LangGraph workflow
-3. Dependency injection for testing
+2. Evolution loop with actual strategy application
+3. Integration with LangGraph workflow and optimization chain
+
+Design Principles:
+1. Strategy flows through the entire pipeline (not just recorded)
+2. Clear separation between orchestration and execution
+3. Explicit state transitions with full traceability
+4. Graceful degradation (rule-based fallback when LLM fails)
 """
 
 from typing import List, Dict, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from loguru import logger
+from datetime import datetime, timedelta
 
-from backend.models import MiningTask, Alpha
+from backend.models import MiningTask, Alpha, AlphaFailure
 from backend.agents.graph import MiningWorkflow, create_mining_graph
 from backend.agents.services import LLMService, get_llm_service
 from backend.agents.services.trace_service import TraceService
-from backend.agents.strategy_agent import StrategyAgent, create_strategy_agent, RoundMetrics
+from backend.agents.strategy_agent import StrategyAgent, create_strategy_agent
+from backend.agents.evolution_strategy import (
+    EvolutionStrategy, StrategyMode, RoundResult, 
+    RuleBasedTransition, merge_strategies
+)
+from backend.agents.feedback_agent import FeedbackAgent
 from backend.adapters.brain_adapter import BrainAdapter
 
 
 class MiningAgent:
     """
-    Mining Agent - High-level interface for alpha mining.
+    Mining Agent - Orchestrates the alpha mining process.
     
-    Now powered by LangGraph for:
-    - Self-correction loops
-    - Conditional routing
-    - Full trace recording
-    - Checkpointing support
+    Key Responsibilities:
+    1. Manage evolution loop across multiple rounds
+    2. Ensure strategy is propagated to all pipeline stages
+    3. Coordinate feedback learning and knowledge accumulation
+    4. Handle failures gracefully with automatic recovery
     
     Usage:
         agent = MiningAgent(db, brain)
-        alphas = await agent.run_mining_iteration(task, dataset_id, fields, operators)
+        result = await agent.run_evolution_loop(task, dataset_id, fields, operators)
     """
     
     def __init__(
@@ -43,12 +54,12 @@ class MiningAgent:
         llm_service: LLMService = None
     ):
         """
-        Initialize MiningAgent.
+        Initialize MiningAgent with dependencies.
         
         Args:
-            db: Async SQLAlchemy session
-            brain_adapter: BRAIN platform adapter (optional)
-            llm_service: LLM service instance (optional)
+            db: Async SQLAlchemy session for persistence
+            brain_adapter: BRAIN platform adapter for simulation
+            llm_service: LLM service for generation and analysis
         """
         self.db = db
         self.brain = brain_adapter or BrainAdapter()
@@ -61,10 +72,16 @@ class MiningAgent:
             llm_service=self.llm_service
         )
         
-        # Create Strategy Agent for intelligent next-round planning
+        # Create Strategy Agent for intelligent planning
         self._strategy_agent = create_strategy_agent(llm_service=self.llm_service)
         
-        logger.info("[MiningAgent] Initialized with LangGraph workflow + StrategyAgent")
+        # Rule-based transition for fallback
+        self._rule_transition = RuleBasedTransition()
+        
+        # Feedback Agent for knowledge accumulation
+        self._feedback_agent = FeedbackAgent(db)
+        
+        logger.info("[MiningAgent] Initialized with strategy-aware pipeline")
     
     async def run_mining_iteration(
         self,
@@ -73,97 +90,133 @@ class MiningAgent:
         fields: List[Dict],
         operators: List[Dict],
         num_alphas: int = 3,
-        iteration: int = 1
+        iteration: int = 1,
+        strategy: Optional[EvolutionStrategy] = None
     ) -> List[Alpha]:
         """
-        Run a single mining iteration for a dataset.
-        
-        This is the backward-compatible interface that:
-        1. Executes the LangGraph workflow
-        2. Persists results to database
-        3. Returns list of generated Alpha models
+        Run a single mining iteration with strategy application.
         
         Args:
             task: Mining task instance
             dataset_id: Dataset to mine
             fields: Available data fields
             operators: Available operators
-            num_alphas: Target number of alphas to generate
-            iteration: Current iteration number (default: 1)
+            num_alphas: Target number of alphas
+            iteration: Current iteration number
+            strategy: Evolution strategy to apply (uses default if None)
             
         Returns:
-            List of successfully generated Alpha models
+            List of generated Alpha models (both passed and failed)
         """
+        # Use default strategy if none provided
+        if strategy is None:
+            strategy = EvolutionStrategy.default()
+        
         logger.info(
-            f"[MiningAgent] Starting iteration | "
-            f"task={task.id} dataset={dataset_id} target={num_alphas} iter={iteration}"
+            f"[MiningAgent] Starting iteration {iteration} | "
+            f"mode={strategy.mode.value} temp={strategy.temperature:.2f} "
+            f"explore={strategy.exploration_weight:.2f}"
         )
         
-        # Initialize TraceService for Real-Time Tracing
+        # Initialize TraceService
         trace_service = TraceService(self.db, task.id, iteration=iteration)
         
         try:
-            # Run LangGraph workflow with persistence
-            # Pass TraceService via config
+            # Run workflow with strategy context
             result = await self._workflow.run_with_persistence(
                 task=task,
                 dataset_id=dataset_id,
-                fields=fields,
+                fields=self._apply_field_filters(fields, strategy),
                 operators=operators,
                 num_alphas=num_alphas,
-                config={"configurable": {"trace_service": trace_service}}
+                config={
+                    "configurable": {
+                        "trace_service": trace_service,
+                        "strategy": strategy.to_dict(),  # Pass strategy to all nodes
+                    }
+                }
             )
             
-            # Convert results to Alpha models for backward compatibility
-            generated_alphas = []
-            for alpha_result in result.get("generated_alphas", []):
-                # Query the persisted alpha
-                from sqlalchemy import select
-                query = select(Alpha).where(
-                    Alpha.task_id == task.id,
-                    Alpha.expression == alpha_result.expression
-                ).order_by(Alpha.id.desc()).limit(1)
-                
-                db_result = await self.db.execute(query)
-                alpha = db_result.scalar_one_or_none()
-                
-                if alpha:
-                    generated_alphas.append(alpha)
+            # Collect generated alphas from database
+            generated_alphas = await self._collect_iteration_alphas(
+                task.id, result.get("generated_alphas", [])
+            )
             
             logger.info(
-                f"[MiningAgent] Iteration complete | "
-                f"alphas={len(generated_alphas)} failures={len(result.get('failures', []))}"
+                f"[MiningAgent] Iteration {iteration} complete | "
+                f"alphas={len(generated_alphas)} "
+                f"failures={len(result.get('failures', []))}"
             )
             
             return generated_alphas
             
         except Exception as e:
-            logger.error(f"[MiningAgent] Iteration failed | error={e}")
+            logger.error(f"[MiningAgent] Iteration {iteration} failed: {e}")
             raise
     
-    async def run_workflow(
-        self,
-        task: MiningTask,
-        dataset_id: str,
-        fields: List[Dict],
-        operators: List[Dict],
-        num_alphas: int = 3
-    ) -> Dict[str, Any]:
+    def _apply_field_filters(
+        self, 
+        fields: List[Dict], 
+        strategy: EvolutionStrategy
+    ) -> List[Dict]:
         """
-        Run workflow and return raw result (without DB persistence).
+        Apply strategy-based field filtering.
         
-        Useful for testing or when you want to handle persistence yourself.
-        
-        Returns:
-            Dict with 'generated_alphas', 'failures', 'trace_steps'
+        Prioritizes preferred fields, demotes avoided fields.
         """
-        return await self._workflow.run(
-            task=task,
-            dataset_id=dataset_id,
-            fields=fields,
-            operators=operators,
-            num_alphas=num_alphas
-        )
+        avoid_set = set(strategy.avoid_fields)
+        preferred_set = set(strategy.preferred_fields)
+        screened_set = set(strategy.screened_fields)
+        
+        # If we have screened fields, prioritize them
+        if screened_set:
+            # Put screened fields first, filter out avoided
+            screened = [f for f in fields if f.get("id", f.get("name")) in screened_set]
+            others = [
+                f for f in fields 
+                if f.get("id", f.get("name")) not in screened_set
+                and f.get("id", f.get("name")) not in avoid_set
+            ]
+            return screened + others[:20]  # Limit total fields
+        
+        # Otherwise, use preferred/avoid logic
+        preferred = []
+        neutral = []
+        avoided = []
+        
+        for f in fields:
+            field_id = f.get("id", f.get("name"))
+            if field_id in avoid_set:
+                avoided.append(f)
+            elif field_id in preferred_set:
+                preferred.append(f)
+            else:
+                neutral.append(f)
+        
+        # Preferred first, then neutral, avoided last (or excluded)
+        return preferred + neutral[:30]  # Limit to manageable size
+    
+    async def _collect_iteration_alphas(
+        self, 
+        task_id: str, 
+        alpha_results: List[Any]
+    ) -> List[Alpha]:
+        """Collect persisted Alpha models for this iteration."""
+        alphas = []
+        
+        for alpha_result in alpha_results:
+            query = select(Alpha).where(
+                Alpha.task_id == task_id,
+                Alpha.expression == alpha_result.expression
+            ).order_by(Alpha.id.desc()).limit(1)
+            
+            db_result = await self.db.execute(query)
+            alpha = db_result.scalar_one_or_none()
+            
+            if alpha:
+                alphas.append(alpha)
+        
+        return alphas
     
     async def run_evolution_loop(
         self,
@@ -173,208 +226,151 @@ class MiningAgent:
         operators: List[Dict],
         max_iterations: int = 10,
         target_alphas: int = 4,
-        num_alphas_per_round: int = 4
+        num_alphas_per_round: int = 4,
+        initial_strategy: Optional[EvolutionStrategy] = None
     ) -> Dict[str, Any]:
         """
         Run multi-round evolution loop for alpha mining.
         
-        Implements RD-Agent/Alpha-GPT style evolutionary iteration:
-        - Outer loop continues until goal reached OR max iterations
-        - Each round generates, simulates, evaluates alphas
-        - Results accumulate across rounds
-        - Early termination when target_alphas achieved
+        This is the main entry point for production mining. It:
+        1. Iterates through mining rounds until goal or max iterations
+        2. Applies and evolves strategy based on results
+        3. Triggers optimization chain for promising weak alphas
+        4. Accumulates knowledge through feedback agent
         
         Args:
             task: Mining task instance
             dataset_id: Dataset to mine
             fields: Available data fields
             operators: Available operators
-            max_iterations: Maximum number of mining rounds
-            target_alphas: Target number of successful alphas (daily_goal)
+            max_iterations: Maximum mining rounds
+            target_alphas: Target number of successful alphas
             num_alphas_per_round: Alphas to generate per round
+            initial_strategy: Optional starting strategy
             
         Returns:
-            Dict with iteration stats, total_alphas, all_results
+            Dict with complete evolution results
         """
         logger.info(
-            f"[MiningAgent] 🚀 Starting Evolution Loop | "
+            f"[MiningAgent] Starting Evolution Loop | "
             f"task={task.id} dataset={dataset_id} "
             f"max_iter={max_iterations} target={target_alphas}"
         )
         
+        # Initialize state
         iteration = 0
         total_success = 0
-        all_alphas = []
-        all_failures = []
+        all_alphas: List[Alpha] = []
+        all_failures: List[Dict] = []
+        strategy_history: List[EvolutionStrategy] = []
+        
+        # Start with provided or default strategy
+        current_strategy = initial_strategy or EvolutionStrategy.default()
         
         while iteration < max_iterations:
             iteration += 1
             
-            logger.info(f"[MiningAgent] === Evolution Round {iteration}/{max_iterations} ===")
+            logger.info(
+                f"[MiningAgent] === Round {iteration}/{max_iterations} === "
+                f"Strategy: {current_strategy.action_summary}"
+            )
             
             try:
-                # Run single mining iteration
+                # Execute mining iteration with current strategy
                 alphas = await self.run_mining_iteration(
                     task=task,
                     dataset_id=dataset_id,
                     fields=fields,
                     operators=operators,
                     num_alphas=num_alphas_per_round,
+                    iteration=iteration,
+                    strategy=current_strategy
+                )
+                
+                # Analyze round results
+                round_result = await self._analyze_round_results(
+                    task_id=task.id,
+                    alphas=alphas,
                     iteration=iteration
                 )
                 
-                # Count successful alphas (PASS quality status)
-                round_success = len([a for a in alphas if a.quality_status == "PASS"])
-                total_success += round_success
+                # Update counters
+                total_success += round_result.passed_count
                 all_alphas.extend(alphas)
+                strategy_history.append(current_strategy)
                 
                 logger.info(
-                    f"[MiningAgent] Round {iteration} complete | "
-                    f"round_success={round_success} total={total_success}/{target_alphas}"
+                    f"[MiningAgent] Round {iteration} | "
+                    f"passed={round_result.passed_count} "
+                    f"total={total_success}/{target_alphas}"
                 )
                 
-                # Check termination condition: goal reached
+                # Check termination: goal reached
                 if total_success >= target_alphas:
                     logger.info(
-                        f"[MiningAgent] 🎯 Goal reached! "
-                        f"{total_success}/{target_alphas} alphas found in {iteration} iterations"
+                        f"[MiningAgent] Goal reached! "
+                        f"{total_success}/{target_alphas} in {iteration} rounds"
                     )
                     break
                 
-                # Check if task should stop (paused/stopped externally)
+                # Check termination: task stopped externally
                 await self.db.refresh(task)
                 if task.status in ["STOPPED", "PAUSED"]:
-                    logger.info(f"[MiningAgent] Task {task.status}, stopping evolution loop")
+                    logger.info(f"[MiningAgent] Task {task.status}, stopping")
                     break
-                    
-            except Exception as e:
-                logger.error(f"[MiningAgent] Round {iteration} failed: {e}")
-                # Continue to next iteration on failure (resilience)
-                continue
-            
-            # --- INTELLIGENT STRATEGY: RD-Agent/Alpha-GPT Style Analysis ---
-            # Query recent failures for comprehensive analysis
-            from backend.models import AlphaFailure
-            from datetime import datetime, timedelta
-            
-            failures_query = select(AlphaFailure).where(
-                AlphaFailure.task_id == task.id,
-                AlphaFailure.created_at >= datetime.utcnow() - timedelta(minutes=5),
-                AlphaFailure.is_analyzed == False
-            )
-            res = await self.db.execute(failures_query)
-            recent_failures = res.scalars().all()
-            failures_dicts = [
-                {
-                    "expression": f.expression, 
-                    "error_message": f.error_message,
-                    "error_type": f.error_type
-                } 
-                for f in recent_failures
-            ]
-            
-            # Compute comprehensive metrics using StrategyAgent
-            round_metrics = self._strategy_agent.compute_round_metrics(alphas, failures_dicts)
-            
-            # Generate intelligent next-round strategy
-            next_strategy = await self._strategy_agent.generate_strategy(
-                iteration=iteration,
-                max_iterations=max_iterations,
-                alphas=alphas,
-                failures=failures_dicts,
-                dataset_id=dataset_id,
-                region=task.region,
-                cumulative_success=total_success,
-                target_goal=target_alphas
-            )
-            
-            logger.info(
-                f"[MiningAgent] Strategy generated | "
-                f"action={next_strategy.action_summary} temp={next_strategy.temperature}"
-            )
-
-            # Record Comprehensive ROUND_SUMMARY with rich metrics
-            try:
-                summary_tracer = TraceService(self.db, task.id, initial_step_order=99, iteration=iteration)
-                await summary_tracer.persist_record(
-                    summary_tracer.create_record(
-                        step_type="ROUND_SUMMARY",
-                        status="SUCCESS",
-                        input_data={
-                            "round": iteration,
-                            "total_alphas": round_metrics.total_alphas,
-                            "target_alphas": target_alphas,
-                            "cumulative_success": total_success
-                        },
-                        output_data={
-                            "mining_success": round_metrics.passed_alphas > 0,
-                            "simulated_alphas": round_metrics.simulated_alphas, # Added metric
-                            "succeeded_alphas": round_metrics.passed_alphas,
-                            "failed_alphas": round_metrics.failed_alphas,
-                            "success_rate": round(round_metrics.success_rate, 3),
-                            
-                            # Quality metrics (multi-dimensional)
-                            "best_sharpe": round_metrics.best_sharpe,
-                            "avg_sharpe": round_metrics.avg_sharpe,
-                            "best_fitness": round_metrics.best_fitness,
-                            "avg_fitness": round_metrics.avg_fitness,
-                            "avg_turnover": round_metrics.avg_turnover,
-                            "avg_returns": round_metrics.avg_returns,
-                            
-                            # Failure analysis
-                            "error_breakdown": {
-                                "syntax_errors": round_metrics.syntax_errors,
-                                "simulation_errors": round_metrics.simulation_errors,
-                                "quality_failures": round_metrics.quality_failures
-                            },
-                            "common_error_types": round_metrics.common_error_types,
-                            "problematic_fields": round_metrics.problematic_fields,
-                            
-                            # Intelligent next-round strategy
-                            "next_strategy": {
-                                "temperature": next_strategy.temperature,
-                                "exploration_weight": next_strategy.exploration_weight,
-                                "action": next_strategy.action_summary,
-                                "reasoning": next_strategy.reasoning,
-                                "focus_hypotheses": next_strategy.focus_hypotheses[:3],
-                                "avoid_patterns": next_strategy.avoid_patterns[:3],
-                                "amplify_patterns": next_strategy.amplify_patterns[:3],
-                                "preferred_fields": next_strategy.preferred_fields[:5],
-                                "avoid_fields": next_strategy.avoid_fields[:3],
-                                "optimization_suggestions": next_strategy.optimization_suggestions[:2]
-                            }
-                        }
-                    )
-                )
-            except Exception as e:
-                logger.error(f"Failed to record round summary: {e}")
-            
-            # --- FEEDBACK LOOP: Learn from this round ---
-            # Reuse failures_dicts from strategy analysis above
-            from backend.agents.feedback_agent import FeedbackAgent
-            feedback_agent = FeedbackAgent(self.db)
-            
-            try:
-                await feedback_agent.learn_from_round(
-                    successes=alphas,
-                    failures=failures_dicts,
-                    iteration=iteration,
+                
+                # === STRATEGY EVOLUTION ===
+                current_strategy = await self._evolve_strategy(
+                    current_strategy=current_strategy,
+                    round_result=round_result,
+                    cumulative_success=total_success,
+                    target_goal=target_alphas,
+                    max_iterations=max_iterations,
                     dataset_id=dataset_id,
                     region=task.region
                 )
                 
-                # Mark failures as analyzed
-                for f in recent_failures:
-                    f.is_analyzed = True
-                await self.db.commit()
+                # === RECORD ROUND SUMMARY ===
+                await self._record_round_summary(
+                    task=task,
+                    iteration=iteration,
+                    round_result=round_result,
+                    strategy=current_strategy,
+                    cumulative_success=total_success,
+                    target_alphas=target_alphas
+                )
+                
+                # === FEEDBACK LEARNING ===
+                await self._run_feedback_learning(
+                    task=task,
+                    alphas=alphas,
+                    round_result=round_result,
+                    iteration=iteration,
+                    dataset_id=dataset_id
+                )
+                
+                # === OPTIMIZATION CHAIN (if applicable) ===
+                if round_result.optimization_candidates:
+                    await self._run_optimization_chain(
+                        task=task,
+                        candidates=round_result.optimization_candidates,
+                        strategy=current_strategy,
+                        iteration=iteration
+                    )
                 
             except Exception as e:
-                logger.warning(f"[MiningAgent] Feedback learning failed: {e}")
+                logger.error(f"[MiningAgent] Round {iteration} error: {e}")
+                # Create rescue strategy and continue
+                current_strategy = EvolutionStrategy.rescue_mode(
+                    problematic_fields=list(current_strategy.avoid_fields),
+                    iteration=iteration
+                )
+                continue
         
         # Final summary
         logger.info(
-            f"[MiningAgent] ✅ Evolution Loop Complete | "
-            f"iterations={iteration} total_alphas={total_success}"
+            f"[MiningAgent] Evolution Complete | "
+            f"iterations={iteration} success={total_success}"
         )
         
         return {
@@ -382,8 +378,362 @@ class MiningAgent:
             "total_success": total_success,
             "target_reached": total_success >= target_alphas,
             "all_alphas": all_alphas,
-            "all_failures": all_failures
+            "all_failures": all_failures,
+            "strategy_history": [s.to_dict() for s in strategy_history],
+            "final_strategy": current_strategy.to_dict(),
         }
+    
+    async def _analyze_round_results(
+        self,
+        task_id: str,
+        alphas: List[Alpha],
+        iteration: int
+    ) -> RoundResult:
+        """
+        Analyze results from a mining round to inform next strategy.
+        
+        Extracts metrics, identifies patterns, and flags optimization candidates.
+        """
+        result = RoundResult(iteration=iteration)
+        result.total_generated = len(alphas)
+        
+        # Separate passed and failed
+        passed = [a for a in alphas if getattr(a, "quality_status", None) == "PASS"]
+        failed = [a for a in alphas if getattr(a, "quality_status", None) != "PASS"]
+        
+        result.passed_count = len(passed)
+        result.failed_count = len(failed)
+        
+        # Count simulated (passed + quality failures)
+        result.total_simulated = len(passed) + len([
+            a for a in failed 
+            if getattr(a, "is_simulated", False)
+        ])
+        
+        # Extract metrics from passed alphas
+        if passed:
+            sharpes = []
+            fitnesses = []
+            turnovers = []
+            
+            for a in passed:
+                metrics = getattr(a, "metrics", {}) or {}
+                if isinstance(metrics, dict):
+                    if metrics.get("sharpe") is not None:
+                        sharpes.append(metrics["sharpe"])
+                    if metrics.get("fitness") is not None:
+                        fitnesses.append(metrics["fitness"])
+                    if metrics.get("turnover") is not None:
+                        turnovers.append(metrics["turnover"])
+            
+            if sharpes:
+                result.best_sharpe = max(sharpes)
+                result.avg_sharpe = sum(sharpes) / len(sharpes)
+            if fitnesses:
+                result.best_fitness = max(fitnesses)
+                result.avg_fitness = sum(fitnesses) / len(fitnesses)
+            if turnovers:
+                result.avg_turnover = sum(turnovers) / len(turnovers)
+        
+        # Query recent failures for analysis
+        failures = await self._query_recent_failures(task_id)
+        
+        # Analyze failure patterns
+        problematic_fields = {}
+        for f in failures:
+            err_msg = f.get("error_message", "") or ""
+            err_type = f.get("error_type", "")
+            
+            # Count error types
+            if "syntax" in err_msg.lower() or err_type == "SYNTAX_ERROR":
+                result.syntax_errors += 1
+            elif "simulation" in err_msg.lower() or err_type == "SIMULATION_ERROR":
+                result.simulation_errors += 1
+            elif err_type == "QUALITY_CHECK_FAILED":
+                result.quality_failures += 1
+            
+            # Extract problematic fields
+            import re
+            field_match = re.search(r"field[:\s]+['\"]?(\w+)['\"]?", err_msg.lower())
+            if field_match:
+                fname = field_match.group(1)
+                problematic_fields[fname] = problematic_fields.get(fname, 0) + 1
+        
+        result.problematic_fields = sorted(
+            problematic_fields.keys(),
+            key=lambda x: problematic_fields[x],
+            reverse=True
+        )[:5]
+        
+        # Identify optimization candidates (weak but promising)
+        result.optimization_candidates = await self._identify_optimization_candidates(
+            alphas=failed,
+            task_id=task_id
+        )
+        
+        return result
+    
+    async def _query_recent_failures(self, task_id: str) -> List[Dict]:
+        """Query recent failure records for analysis."""
+        query = select(AlphaFailure).where(
+            AlphaFailure.task_id == task_id,
+            AlphaFailure.created_at >= datetime.utcnow() - timedelta(minutes=10),
+            AlphaFailure.is_analyzed == False
+        )
+        res = await self.db.execute(query)
+        failures = res.scalars().all()
+        
+        return [
+            {
+                "expression": f.expression,
+                "error_message": f.error_message,
+                "error_type": f.error_type
+            }
+            for f in failures
+        ]
+    
+    async def _identify_optimization_candidates(
+        self,
+        alphas: List[Alpha],
+        task_id: str
+    ) -> List[Dict]:
+        """
+        Identify weak alphas that are worth optimizing.
+        
+        Criteria (from alpha_scoring.should_optimize):
+        - Positive but below threshold
+        - Risk-neutralized significantly better than raw
+        - IS/OS gap suggests overfitting (fixable with decay/window)
+        """
+        from alpha_scoring import should_optimize
+        
+        candidates = []
+        
+        for a in alphas:
+            if not getattr(a, "is_simulated", False):
+                continue
+            
+            # Get raw simulation result if available
+            raw_result = getattr(a, "raw_sim_result", None) or getattr(a, "metrics", {})
+            if not raw_result:
+                continue
+            
+            should_opt, reason = should_optimize(raw_result)
+            
+            if should_opt:
+                candidates.append({
+                    "expression": a.expression,
+                    "hypothesis": getattr(a, "hypothesis", ""),
+                    "metrics": getattr(a, "metrics", {}),
+                    "reason": reason
+                })
+        
+        return candidates[:5]  # Limit to top 5
+    
+    async def _evolve_strategy(
+        self,
+        current_strategy: EvolutionStrategy,
+        round_result: RoundResult,
+        cumulative_success: int,
+        target_goal: int,
+        max_iterations: int,
+        dataset_id: str,
+        region: str
+    ) -> EvolutionStrategy:
+        """
+        Evolve strategy based on round results.
+        
+        Uses LLM analysis when available, falls back to rules.
+        """
+        # Compute rule-based strategy (always available)
+        rule_strategy = self._rule_transition.compute_next_strategy(
+            current_strategy=current_strategy,
+            round_result=round_result,
+            cumulative_success=cumulative_success,
+            target_goal=target_goal,
+            max_iterations=max_iterations
+        )
+        
+        # Try LLM-based strategy enhancement
+        try:
+            # Get alphas for this round (for LLM analysis)
+            query = select(Alpha).where(
+                Alpha.task_id == self.db.identity_key(Alpha)[1] if hasattr(self.db, 'identity_key') else True
+            ).limit(10)
+            
+            llm_response = await self._strategy_agent.generate_strategy(
+                iteration=round_result.iteration,
+                max_iterations=max_iterations,
+                alphas=[],  # We'll pass metrics directly
+                failures=await self._query_recent_failures(""),
+                dataset_id=dataset_id,
+                region=region,
+                cumulative_success=cumulative_success,
+                target_goal=target_goal,
+                previous_strategy=current_strategy
+            )
+            
+            # Convert to dict for merging
+            llm_dict = {
+                "strategy": {
+                    "temperature": llm_response.temperature,
+                    "exploration_weight": llm_response.exploration_weight,
+                    "focus_hypotheses": llm_response.focus_hypotheses,
+                    "avoid_patterns": llm_response.avoid_patterns,
+                    "preferred_fields": llm_response.preferred_fields,
+                    "avoid_fields": llm_response.avoid_fields,
+                    "action_summary": llm_response.action_summary,
+                    "reasoning": llm_response.reasoning,
+                },
+                "optimization_targets": llm_response.optimization_suggestions
+            }
+            
+            # Merge LLM suggestions with rule guardrails
+            return merge_strategies(current_strategy, llm_dict, rule_strategy)
+            
+        except Exception as e:
+            logger.warning(f"[MiningAgent] LLM strategy failed, using rules: {e}")
+            return rule_strategy
+    
+    async def _record_round_summary(
+        self,
+        task: MiningTask,
+        iteration: int,
+        round_result: RoundResult,
+        strategy: EvolutionStrategy,
+        cumulative_success: int,
+        target_alphas: int
+    ):
+        """Record comprehensive round summary for tracing."""
+        try:
+            trace_service = TraceService(
+                self.db, task.id, 
+                initial_step_order=99, 
+                iteration=iteration
+            )
+            
+            record = trace_service.create_record(
+                step_type="ROUND_SUMMARY",
+                status="SUCCESS",
+                input_data={
+                    "round": iteration,
+                    "strategy_mode": strategy.mode.value,
+                    "target_alphas": target_alphas,
+                },
+                output_data={
+                    "cumulative_success": cumulative_success,
+                    "round_metrics": round_result.to_dict(),
+                    "next_strategy": strategy.to_dict(),
+                }
+            )
+            
+            await trace_service.persist_record(record)
+            
+        except Exception as e:
+            logger.error(f"Failed to record round summary: {e}")
+    
+    async def _run_feedback_learning(
+        self,
+        task: MiningTask,
+        alphas: List[Alpha],
+        round_result: RoundResult,
+        iteration: int,
+        dataset_id: str
+    ):
+        """Run feedback learning to accumulate knowledge."""
+        try:
+            failures = await self._query_recent_failures(task.id)
+            
+            await self._feedback_agent.learn_from_round(
+                successes=alphas,
+                failures=failures,
+                iteration=iteration,
+                dataset_id=dataset_id,
+                region=task.region
+            )
+            
+            # Mark failures as analyzed
+            query = select(AlphaFailure).where(
+                AlphaFailure.task_id == task.id,
+                AlphaFailure.is_analyzed == False
+            )
+            res = await self.db.execute(query)
+            for f in res.scalars().all():
+                f.is_analyzed = True
+            
+            await self.db.commit()
+            
+        except Exception as e:
+            logger.warning(f"[MiningAgent] Feedback learning failed: {e}")
+    
+    async def _run_optimization_chain(
+        self,
+        task: MiningTask,
+        candidates: List[Dict],
+        strategy: EvolutionStrategy,
+        iteration: int
+    ):
+        """
+        Run optimization chain on promising weak alphas.
+        
+        This is the Chain-of-Alpha style optimization loop.
+        """
+        from optimization_chain import generate_local_rewrites, generate_settings_variants
+        
+        logger.info(f"[MiningAgent] Running optimization chain on {len(candidates)} candidates")
+        
+        for candidate in candidates[:3]:  # Limit to top 3
+            expression = candidate.get("expression", "")
+            metrics = candidate.get("metrics", {})
+            reason = candidate.get("reason", "")
+            
+            if not expression:
+                continue
+            
+            try:
+                # Generate expression variants
+                expr_variants = generate_local_rewrites(
+                    expression=expression,
+                    sim_result=metrics,
+                    feedback=reason,
+                    max_variants=10
+                )
+                
+                # Generate settings variants
+                settings_variants = generate_settings_variants({
+                    "neutralization": "INDUSTRY",
+                    "decay": 4,
+                    "truncation": 0.02
+                })
+                
+                # Simulate top variants (budget-limited)
+                await self._simulate_optimization_variants(
+                    task=task,
+                    original_expression=expression,
+                    expr_variants=expr_variants[:5],
+                    settings_variants=settings_variants[:3],
+                    iteration=iteration
+                )
+                
+            except Exception as e:
+                logger.warning(f"Optimization failed for {expression[:50]}: {e}")
+    
+    async def _simulate_optimization_variants(
+        self,
+        task: MiningTask,
+        original_expression: str,
+        expr_variants: List[Dict],
+        settings_variants: List[Dict],
+        iteration: int
+    ):
+        """Simulate optimization variants and save improvements."""
+        # This would call brain.simulate_alpha for each variant
+        # For now, log the intent
+        logger.info(
+            f"[MiningAgent] Would simulate {len(expr_variants)} expression variants "
+            f"and {len(settings_variants)} settings variants"
+        )
+        # TODO: Implement actual simulation and comparison
     
     @property
     def workflow(self) -> MiningWorkflow:
@@ -404,6 +754,6 @@ def create_mining_agent(
     
     Usage:
         agent = create_mining_agent(db)
-        alphas = await agent.run_mining_iteration(task, ...)
+        result = await agent.run_evolution_loop(task, ...)
     """
     return MiningAgent(db=db, brain_adapter=brain)

@@ -1,16 +1,27 @@
 """
 Config Router - System configuration management
+
+Includes:
+- Quality thresholds
+- Operator preferences
+- Credentials management (Brain, LLM API)
 """
 
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
-from typing import Optional
-from pydantic import BaseModel
+from typing import Optional, Dict, Any
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 from backend.database import get_db
 from backend.models import SystemConfig, OperatorPreference
+from backend.services.credentials_service import (
+    CredentialsService, 
+    CredentialKey,
+    get_credentials_service
+)
 
 router = APIRouter(
     prefix="/config",
@@ -30,8 +41,10 @@ class ThresholdsConfig(BaseModel):
     returns_min: float = 0.0
     max_dd_max: float = 0.3
 
+
 class DiversityConfig(BaseModel):
     max_correlation: float = 0.7
+
 
 class FullConfig(BaseModel):
     quality_thresholds: Optional[ThresholdsConfig] = None
@@ -39,31 +52,211 @@ class FullConfig(BaseModel):
     daily_budget: Optional[dict] = None
 
 
+class BrainCredentialsRequest(BaseModel):
+    """Request model for Brain platform credentials."""
+    email: str = Field(..., description="Brain platform email")
+    password: str = Field(..., description="Brain platform password")
+
+
+class LLMCredentialsRequest(BaseModel):
+    """Request model for LLM API credentials."""
+    api_key: str = Field(..., description="API key (e.g., OpenAI, DeepSeek)")
+    base_url: str = Field(
+        default="https://api.deepseek.com/v1",
+        description="API base URL"
+    )
+    model: str = Field(
+        default="deepseek-chat",
+        description="Model name"
+    )
+
+
+class CredentialStatusResponse(BaseModel):
+    """Response model for credential status."""
+    key: str
+    masked: str
+    is_set: bool
+    source: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
 # =============================================================================
-# ENDPOINTS
+# CREDENTIALS MANAGEMENT (Must be before /{key} route)
 # =============================================================================
 
-@router.get("")
-async def get_all_config(db: AsyncSession = Depends(get_db)):
-    """Get all system configuration."""
-    query = select(SystemConfig)
-    result = await db.execute(query)
-    configs = result.scalars().all()
+@router.get("/credentials")
+async def get_credentials_status(db: AsyncSession = Depends(get_db)):
+    """
+    Get status of all configured credentials (masked values).
     
-    return {c.key: c.value for c in configs}
+    Returns configuration status without exposing actual values.
+    """
+    service = get_credentials_service(db)
+    credentials = await service.get_all_credentials_masked()
+    
+    return {
+        "credentials": credentials,
+        "message": "Use POST endpoints to update credentials"
+    }
 
 
-@router.get("/{key}")
-async def get_config(key: str, db: AsyncSession = Depends(get_db)):
-    """Get a specific configuration value."""
-    query = select(SystemConfig).where(SystemConfig.key == key)
+@router.post("/credentials/brain")
+async def set_brain_credentials(
+    credentials: BrainCredentialsRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Set WorldQuant Brain platform credentials.
+    
+    Credentials are encrypted before storage.
+    """
+    from backend.adapters.brain_adapter import BrainAdapter
+    
+    service = get_credentials_service(db)
+    
+    try:
+        await service.set_credential(
+            CredentialKey.BRAIN_EMAIL,
+            credentials.email,
+            description="WorldQuant Brain platform email"
+        )
+        await service.set_credential(
+            CredentialKey.BRAIN_PASSWORD,
+            credentials.password,
+            description="WorldQuant Brain platform password"
+        )
+        
+        # Invalidate cached credentials in BrainAdapter
+        BrainAdapter.invalidate_credentials_cache()
+        CredentialsService.invalidate_cache()
+        
+        return {
+            "success": True,
+            "message": "Brain credentials saved successfully"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save credentials: {str(e)}"
+        )
+
+
+@router.post("/credentials/llm")
+async def set_llm_credentials(
+    credentials: LLMCredentialsRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Set LLM API credentials (OpenAI, DeepSeek, etc.).
+    
+    Credentials are encrypted before storage.
+    """
+    service = get_credentials_service(db)
+    
+    try:
+        await service.set_credential(
+            CredentialKey.OPENAI_API_KEY,
+            credentials.api_key,
+            description="LLM API key"
+        )
+        await service.set_credential(
+            CredentialKey.OPENAI_BASE_URL,
+            credentials.base_url,
+            description="LLM API base URL"
+        )
+        await service.set_credential(
+            CredentialKey.OPENAI_MODEL,
+            credentials.model,
+            description="LLM model name"
+        )
+        
+        # Invalidate credential caches
+        CredentialsService.invalidate_cache()
+        
+        return {
+            "success": True,
+            "message": "LLM credentials saved successfully"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save credentials: {str(e)}"
+        )
+
+
+@router.post("/credentials/brain/test")
+async def test_brain_credentials(db: AsyncSession = Depends(get_db)):
+    """
+    Test Brain platform credentials by attempting authentication.
+    
+    Does not return the actual credentials, only the test result.
+    """
+    service = get_credentials_service(db)
+    result = await service.test_brain_credentials()
+    
+    if not result["success"]:
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error", "Authentication failed")
+        )
+    
+    return result
+
+
+@router.delete("/credentials/{key}")
+async def delete_credential(
+    key: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a specific credential.
+    
+    Valid keys: brain_email, brain_password, openai_api_key, openai_base_url, openai_model
+    """
+    valid_keys = [
+        CredentialKey.BRAIN_EMAIL,
+        CredentialKey.BRAIN_PASSWORD,
+        CredentialKey.OPENAI_API_KEY,
+        CredentialKey.OPENAI_BASE_URL,
+        CredentialKey.OPENAI_MODEL,
+    ]
+    
+    if key not in valid_keys:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid credential key. Valid keys: {valid_keys}"
+        )
+    
+    service = get_credentials_service(db)
+    deleted = await service.delete_credential(key)
+    
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Credential '{key}' not found"
+        )
+    
+    return {"success": True, "message": f"Credential '{key}' deleted"}
+
+
+# =============================================================================
+# THRESHOLDS & DIVERSITY
+# =============================================================================
+
+@router.get("/thresholds")
+async def get_thresholds(db: AsyncSession = Depends(get_db)):
+    """Get quality thresholds configuration."""
+    query = select(SystemConfig).where(SystemConfig.config_key == "quality_thresholds")
     result = await db.execute(query)
     config = result.scalar_one_or_none()
     
-    if not config:
-        raise HTTPException(status_code=404, detail=f"Config '{key}' not found")
+    if config and config.config_value:
+        try:
+            return json.loads(config.config_value)
+        except:
+            return ThresholdsConfig().model_dump()
     
-    return {key: config.value}
+    return ThresholdsConfig().model_dump()
 
 
 @router.put("/thresholds")
@@ -72,11 +265,22 @@ async def update_thresholds(
     db: AsyncSession = Depends(get_db)
 ):
     """Update quality thresholds."""
-    await db.execute(
-        update(SystemConfig)
-        .where(SystemConfig.key == "quality_thresholds")
-        .values(value=thresholds.model_dump())
-    )
+    # Check if exists
+    query = select(SystemConfig).where(SystemConfig.config_key == "quality_thresholds")
+    result = await db.execute(query)
+    existing = result.scalar_one_or_none()
+    
+    if existing:
+        existing.config_value = json.dumps(thresholds.model_dump())
+    else:
+        new_config = SystemConfig(
+            config_key="quality_thresholds",
+            config_value=json.dumps(thresholds.model_dump()),
+            config_type="json",
+            description="Alpha quality thresholds"
+        )
+        db.add(new_config)
+    
     await db.commit()
     
     return {"message": "Thresholds updated", "thresholds": thresholds.model_dump()}
@@ -88,15 +292,30 @@ async def update_diversity(
     db: AsyncSession = Depends(get_db)
 ):
     """Update diversity thresholds."""
-    await db.execute(
-        update(SystemConfig)
-        .where(SystemConfig.key == "diversity_thresholds")
-        .values(value=diversity.model_dump())
-    )
+    # Check if exists
+    query = select(SystemConfig).where(SystemConfig.config_key == "diversity_thresholds")
+    result = await db.execute(query)
+    existing = result.scalar_one_or_none()
+    
+    if existing:
+        existing.config_value = json.dumps(diversity.model_dump())
+    else:
+        new_config = SystemConfig(
+            config_key="diversity_thresholds",
+            config_value=json.dumps(diversity.model_dump()),
+            config_type="json",
+            description="Alpha diversity thresholds"
+        )
+        db.add(new_config)
+    
     await db.commit()
     
     return {"message": "Diversity config updated", "diversity": diversity.model_dump()}
 
+
+# =============================================================================
+# OPERATORS
+# =============================================================================
 
 @router.get("/operators")
 async def get_operator_prefs(db: AsyncSession = Depends(get_db)):
@@ -135,3 +354,19 @@ async def update_operator_pref(
     await db.commit()
     
     return {"message": f"Operator {operator_name} set to {status}"}
+
+
+# =============================================================================
+# GENERAL CONFIG (Must be last due to {key} path param)
+# =============================================================================
+
+@router.get("")
+async def get_all_config(db: AsyncSession = Depends(get_db)):
+    """Get all system configuration (excluding credentials)."""
+    query = select(SystemConfig).where(
+        ~SystemConfig.config_key.like("credential:%")
+    )
+    result = await db.execute(query)
+    configs = result.scalars().all()
+    
+    return {c.config_key: c.config_value for c in configs}

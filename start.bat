@@ -25,14 +25,14 @@ if /i "%install_deps%"=="y" (
     cd ..
 )
 
-REM 3. Database Init
-set /p init_db="Initialize Database? (y/n) [n]: "
+REM 3. Database Setup (optional - tables are auto-created on app start)
+set /p init_db="Create database if not exists? (y/n) [n]: "
 if /i "%init_db%"=="y" (
-    echo [INFO] initializing database...
-    echo [NOTE] Make sure PostgreSQL is running and password is set in .env or PGPASSWORD env var.
-    psql -U postgres -c "CREATE DATABASE alpha_gpt;"
-    psql -U postgres -d alpha_gpt -f backend/migrations/001_initial_schema.sql
+    echo [INFO] Creating database if not exists...
+    echo [NOTE] Make sure PostgreSQL is running and credentials are set in .env file.
+    python backend/migrations/init_database.py
 )
+:skip_init
 
 REM 4. Start Server
 set /p port="Enter Backend Port (default 8001): "
@@ -40,8 +40,6 @@ if "%port%"=="" set port=8001
 
 echo [INFO] Starting Backend on port %port%...
 start "AIAC Backend" cmd /k "uvicorn backend.main:app --reload --port %port%"
-
-celery -A backend.celery_app worker --loglevel=info --pool=solo
 
 echo [INFO] Starting Frontend...
 cd frontend
@@ -52,4 +50,7 @@ echo [SUCCESS] Services started!
 echo Backend: http://localhost:%port%
 echo Frontend: http://localhost:5174
 echo.
+
+echo [INFO] Starting Celery Worker...
+start "AIAC Celery Worker" cmd /k "celery -A backend.celery_app worker --loglevel=info --pool=solo"
 pause

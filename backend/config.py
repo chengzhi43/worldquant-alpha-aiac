@@ -50,11 +50,31 @@ class Settings(BaseSettings):
     DEFAULT_UNIVERSE: str = "TOP3000"
     DEFAULT_DAILY_GOAL: int = 4
     
-    # Quality Thresholds
+    # Quality Thresholds (Traditional)
     SHARPE_MIN: float = 1.5
     TURNOVER_MAX: float = 0.7
     FITNESS_MIN: float = 0.6
     MAX_CORRELATION: float = 0.7
+    
+    # Multi-Objective Scoring Thresholds
+    SCORE_PASS_THRESHOLD: float = 0.8      # Composite score to pass
+    SCORE_OPTIMIZE_THRESHOLD: float = 0.3  # Score threshold for optimization queue
+    
+    # Evolution Strategy Defaults
+    DEFAULT_TEMPERATURE: float = 0.7
+    DEFAULT_EXPLORATION_WEIGHT: float = 0.5
+    MAX_EVOLUTION_ITERATIONS: int = 10
+    ALPHAS_PER_ROUND: int = 4
+    
+    # Optimization Chain Settings
+    MAX_OPTIMIZATION_VARIANTS: int = 10
+    MAX_SETTINGS_VARIANTS: int = 5
+    OPTIMIZATION_BUDGET_PER_ALPHA: int = 20  # Max simulations per optimization target
+    
+    # Field Screening Settings
+    FIELD_SCREENING_ENABLED: bool = True
+    FIELD_SCREENING_TOP_K: int = 20
+    FIELD_SCREENING_TEMPLATES: int = 4  # Number of templates to test per field
     
     # Rate Limiting
     MAX_SIMULATIONS_PER_DAY: int = 100

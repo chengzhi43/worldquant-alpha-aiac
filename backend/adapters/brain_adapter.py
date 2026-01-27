@@ -35,16 +35,94 @@ class BrainAdapter:
     """
     Adapter for WorldQuant BRAIN platform.
     Uses a singleton AsyncClient for persistent session management within the same event loop.
+    
+    Credentials priority:
+    1. Constructor arguments (explicit)
+    2. Database configuration (via CredentialsService)
+    3. Environment variables (fallback)
     """
     
     BASE_URL = "https://api.worldquantbrain.com"
     SESSION_BUFFER_SECONDS = 300  # Re-auth if expiring in < 5 mins
     REDIS_SESSION_KEY = "brain_session:cookies"
     
+    # Class-level cached credentials (to avoid DB queries on every request)
+    _cached_email: Optional[str] = None
+    _cached_password: Optional[str] = None
+    _credentials_loaded: bool = False
+    
     def __init__(self, email: str = None, password: str = None):
+        # Store explicit credentials if provided
+        self._explicit_email = email
+        self._explicit_password = password
+        
+        # Initialize with explicit or env fallback (DB credentials loaded async)
         self.email = email or settings.BRAIN_EMAIL
         self.password = password or settings.BRAIN_PASSWORD
         self.session_token = None
+    
+    async def _load_credentials_from_db(self) -> bool:
+        """
+        Load credentials from database if not already loaded.
+        Returns True if credentials were loaded/updated.
+        """
+        # Skip if explicit credentials were provided in constructor
+        if self._explicit_email and self._explicit_password:
+            return False
+        
+        # Skip if already loaded
+        if BrainAdapter._credentials_loaded:
+            if BrainAdapter._cached_email:
+                self.email = BrainAdapter._cached_email
+            if BrainAdapter._cached_password:
+                self.password = BrainAdapter._cached_password
+            return bool(BrainAdapter._cached_email)
+        
+        try:
+            from backend.services.credentials_service import (
+                CredentialsService, 
+                CredentialKey
+            )
+            
+            async with AsyncSessionLocal() as db:
+                service = CredentialsService(db)
+                
+                # Load email
+                db_email = await service.get_credential(
+                    CredentialKey.BRAIN_EMAIL,
+                    fallback_env="BRAIN_EMAIL"
+                )
+                if db_email:
+                    BrainAdapter._cached_email = db_email
+                    self.email = db_email
+                
+                # Load password
+                db_password = await service.get_credential(
+                    CredentialKey.BRAIN_PASSWORD,
+                    fallback_env="BRAIN_PASSWORD"
+                )
+                if db_password:
+                    BrainAdapter._cached_password = db_password
+                    self.password = db_password
+                
+                BrainAdapter._credentials_loaded = True
+                
+                if db_email or db_password:
+                    logger.info("Loaded Brain credentials from database")
+                    return True
+                
+        except Exception as e:
+            logger.warning(f"Failed to load credentials from DB: {e}")
+        
+        return False
+    
+    @classmethod
+    def invalidate_credentials_cache(cls):
+        """Invalidate cached credentials (call after updating credentials)."""
+        cls._cached_email = None
+        cls._cached_password = None
+        cls._credentials_loaded = False
+        logger.info("Brain credentials cache invalidated")
     
     @classmethod
     async def get_client(cls) -> httpx.AsyncClient:
@@ -138,6 +216,9 @@ class BrainAdapter:
 
     async def ensure_session(self):
         """Ensure valid session exists, refreshing if needed. Prefer Redis cache."""
+        # 0. Load credentials from DB if not already loaded
+        await self._load_credentials_from_db()
+        
         # 1. Try to load from Redis first
         if await self._load_session_from_redis():
             # If loaded from Redis, we assume it is valid for now (TTL handles expiry)

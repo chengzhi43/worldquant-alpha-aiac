@@ -217,6 +217,7 @@ class StrategyAgent:
         metrics.success_rate = metrics.passed_alphas / max(metrics.total_alphas, 1)
         
         # Compute quality metrics from passed alphas
+        passed = [a for a in alphas if getattr(a, 'quality_status', None) == "PASS"]
         if passed:
             sharpes = []
             fitnesses = []

@@ -11,7 +11,7 @@ from backend.config import settings
 from backend.database import init_db
 
 # Import all routers
-from backend.routers import dashboard, tasks, alphas, knowledge, config, datasets, operators
+from backend.routers import dashboard, tasks, alphas, knowledge, config, datasets, operators, runs
 
 
 @asynccontextmanager
@@ -45,6 +45,7 @@ app.add_middleware(
 app.include_router(dashboard.router, prefix=settings.API_V1_STR)
 app.include_router(tasks.router, prefix=settings.API_V1_STR)
 app.include_router(alphas.router, prefix=settings.API_V1_STR)
+app.include_router(runs.router, prefix=settings.API_V1_STR)
 app.include_router(knowledge.router, prefix=settings.API_V1_STR)
 app.include_router(config.router, prefix=settings.API_V1_STR)
 app.include_router(datasets.router, prefix=settings.API_V1_STR)

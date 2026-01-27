@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from datetime import datetime
 
 from backend.database import get_db
-from backend.models import MiningTask, TraceStep, Alpha
+from backend.models import MiningTask, TraceStep, Alpha, ExperimentRun
 
 router = APIRouter(
     prefix="/tasks",
@@ -72,6 +72,20 @@ class TraceStepResponse(BaseModel):
 class TaskDetailResponse(TaskResponse):
     trace_steps: List[TraceStepResponse] = []
     alphas_count: int = 0
+
+
+class ExperimentRunResponse(BaseModel):
+    id: int
+    task_id: int
+    status: str
+    trigger_source: Optional[str] = None
+    celery_task_id: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 
 class InterventionRequest(BaseModel):
@@ -274,12 +288,49 @@ async def start_task(task_id: int, db: AsyncSession = Depends(get_db)):
         .values(status="RUNNING")
     )
     await db.commit()
+
+    run = ExperimentRun(
+        task_id=task_id,
+        status="RUNNING",
+        trigger_source="API",
+        celery_task_id=None,
+        config_snapshot={
+            "task": {
+                "region": task.region,
+                "universe": task.universe,
+                "dataset_strategy": task.dataset_strategy,
+                "target_datasets": task.target_datasets,
+                "daily_goal": task.daily_goal,
+                "config": task.config,
+            },
+        },
+        strategy_snapshot={},
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
     
     # Trigger actual mining via Celery
     from backend.tasks import run_mining_task
-    celery_task = run_mining_task.delay(task_id)
+    celery_task = run_mining_task.delay(task_id, run.id)
+
+    run.celery_task_id = celery_task.id
+    await db.commit()
     
-    return {"message": "Task started", "task_id": task_id, "celery_task_id": celery_task.id}
+    return {"message": "Task started", "task_id": task_id, "run_id": run.id, "celery_task_id": celery_task.id}
+
+
+@router.get("/{task_id}/runs", response_model=List[ExperimentRunResponse])
+async def list_task_runs(task_id: int, db: AsyncSession = Depends(get_db)):
+    task_query = select(MiningTask).where(MiningTask.id == task_id)
+    task_result = await db.execute(task_query)
+    if not task_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    query = select(ExperimentRun).where(ExperimentRun.task_id == task_id).order_by(ExperimentRun.started_at.desc())
+    result = await db.execute(query)
+    runs = result.scalars().all()
+    return list(runs)
 
 
 @router.post("/{task_id}/intervene")

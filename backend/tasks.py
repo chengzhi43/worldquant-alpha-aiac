@@ -8,7 +8,7 @@ from backend.celery_app import celery_app
 from backend.database import AsyncSessionLocal
 from backend.agents import MiningAgent, FeedbackAgent
 from backend.adapters.brain_adapter import BrainAdapter
-from backend.models import MiningTask, DatasetMetadata, Operator, DataField
+from backend.models import MiningTask, DatasetMetadata, Operator, DataField, ExperimentRun
 from sqlalchemy import select, update, func
 from loguru import logger
 
@@ -24,15 +24,17 @@ def run_async(coro):
 
 
 @celery_app.task(bind=True, name="backend.tasks.run_mining_task")
-def run_mining_task(self, task_id: int):
+def run_mining_task(self, task_id: int, run_id: int | None = None):
     """
     Run a complete mining task.
     Called when a task is started via API.
     """
-    logger.info(f"Starting mining task {task_id}")
+    logger.info(f"Starting mining task {task_id} (run_id={run_id})")
     
     async def _run():
         async with AsyncSessionLocal() as db:
+            run: ExperimentRun | None = None
+
             # Get task
             query = select(MiningTask).where(MiningTask.id == task_id)
             result = await db.execute(query)
@@ -49,7 +51,66 @@ def run_mining_task(self, task_id: int):
                 .values(status="RUNNING")
             )
             await db.commit()
-            
+
+            # Create or attach ExperimentRun (Run-level artifact for reproducibility)
+            if run_id is not None:
+                run_query = select(ExperimentRun).where(ExperimentRun.id == run_id)
+                run_res = await db.execute(run_query)
+                run = run_res.scalar_one_or_none()
+
+                if run and run.task_id != task_id:
+                    raise ValueError(f"ExperimentRun {run_id} does not belong to task {task_id}")
+
+                if run is None:
+                    run = ExperimentRun(
+                        id=run_id,
+                        task_id=task_id,
+                        status="RUNNING",
+                        trigger_source="API",
+                        celery_task_id=self.request.id,
+                        config_snapshot={
+                            "task": {
+                                "region": task.region,
+                                "universe": task.universe,
+                                "dataset_strategy": task.dataset_strategy,
+                                "target_datasets": task.target_datasets,
+                                "daily_goal": task.daily_goal,
+                                "config": task.config,
+                            },
+                        },
+                        strategy_snapshot={},
+                    )
+                    db.add(run)
+                    await db.commit()
+                    await db.refresh(run)
+                else:
+                    run.status = "RUNNING"
+                    run.trigger_source = "API"
+                    run.celery_task_id = self.request.id
+                    run.error_message = None
+                    await db.commit()
+            else:
+                run = ExperimentRun(
+                    task_id=task_id,
+                    status="RUNNING",
+                    trigger_source="API",
+                    celery_task_id=self.request.id,
+                    config_snapshot={
+                        "task": {
+                            "region": task.region,
+                            "universe": task.universe,
+                            "dataset_strategy": task.dataset_strategy,
+                            "target_datasets": task.target_datasets,
+                            "daily_goal": task.daily_goal,
+                            "config": task.config,
+                        },
+                    },
+                    strategy_snapshot={},
+                )
+                db.add(run)
+                await db.commit()
+                await db.refresh(run)
+
             try:
                 async with BrainAdapter() as brain:
                     mining_agent = MiningAgent(db, brain)
@@ -69,6 +130,11 @@ def run_mining_task(self, task_id: int):
                     
                     if not datasets:
                         logger.warning(f"No datasets found for mining in {task.region}/{task.universe}")
+                        if run is not None:
+                            run.status = "FAILED"
+                            run.finished_at = datetime.utcnow()
+                            run.error_message = "No datasets found"
+                            await db.commit()
                         return {"warning": "No datasets found"}
 
                     # Get operators from LOCAL DB
@@ -158,7 +224,8 @@ def run_mining_task(self, task_id: int):
                                 operators=operators,
                                 max_iterations=10,  # Configurable: max rounds per dataset
                                 target_alphas=remaining_goal,
-                                num_alphas_per_round=4
+                                num_alphas_per_round=4,
+                                run_id=run.id
                             )
                             
                             # Update progress with actual successes
@@ -188,6 +255,10 @@ def run_mining_task(self, task_id: int):
                     .where(MiningTask.id == task_id)
                     .values(status="COMPLETED")
                 )
+
+                if run is not None:
+                    run.status = "COMPLETED"
+                    run.finished_at = datetime.utcnow()
                 await db.commit()
                 
                 logger.info(f"Task {task_id} completed: {total_alphas} alphas mined")
@@ -200,6 +271,11 @@ def run_mining_task(self, task_id: int):
                     .where(MiningTask.id == task_id)
                     .values(status="FAILED")
                 )
+
+                if run is not None:
+                    run.status = "FAILED"
+                    run.finished_at = datetime.utcnow()
+                    run.error_message = str(e)
                 await db.commit()
                 raise
     

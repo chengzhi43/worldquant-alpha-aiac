@@ -89,8 +89,8 @@ async def get_daily_stats(
     
     # Get today's alphas
     alphas_query = select(Alpha).where(
-        Alpha.date_created >= start_of_day,
-        Alpha.date_created < end_of_day,
+        Alpha.created_at >= start_of_day,
+        Alpha.created_at < end_of_day,
         Alpha.quality_status == "PASS"
     )
     alphas_result = await db.execute(alphas_query)
@@ -98,8 +98,8 @@ async def get_daily_stats(
     
     # Calculate metrics
     total_sims_query = select(func.count(Alpha.id)).where(
-        Alpha.date_created >= start_of_day,
-        Alpha.date_created < end_of_day
+        Alpha.created_at >= start_of_day,
+        Alpha.created_at < end_of_day
     )
     total_sims = (await db.execute(total_sims_query)).scalar() or 0
     
@@ -114,7 +114,11 @@ async def get_daily_stats(
     # Average Sharpe of passed alphas
     avg_sharpe = 0.0
     if alphas:
-        sharpes = [a.metrics.get("is_sharpe", 0) for a in alphas if a.metrics]
+        sharpes = [
+            (a.metrics.get("sharpe") if a.metrics.get("sharpe") is not None else a.metrics.get("is_sharpe", 0))
+            for a in alphas
+            if a.metrics
+        ]
         avg_sharpe = sum(sharpes) / len(sharpes) if sharpes else 0.0
     
     return DailyStatsResponse(

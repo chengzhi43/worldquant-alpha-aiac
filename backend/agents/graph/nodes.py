@@ -829,7 +829,7 @@ async def node_simulate(state: MiningState, brain: BrainAdapter, config: Runnabl
 # NODE: Evaluate Quality (Multi-Objective Scoring)
 # =============================================================================
 
-async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Dict:
+async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: RunnableConfig = None) -> Dict:
     """
     Evaluate alpha quality using multi-objective scoring.
     
@@ -876,28 +876,51 @@ async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Di
             continue
         
         metrics = alpha.metrics or {}
+
+        train_sharpe_val = metrics.get("train_sharpe")
+        train_fitness_val = metrics.get("train_fitness")
+        test_sharpe_val = metrics.get("test_sharpe")
+        test_fitness_val = metrics.get("test_fitness")
         
         # Build simulation result dict for scoring
         sim_result = {
             "train": {
-                "sharpe": metrics.get("sharpe", 0),
-                "fitness": metrics.get("fitness", 0),
+                "sharpe": train_sharpe_val if train_sharpe_val is not None else metrics.get("sharpe", 0),
+                "fitness": train_fitness_val if train_fitness_val is not None else metrics.get("fitness", 0),
                 "turnover": metrics.get("turnover", 0),
                 "returns": metrics.get("returns", 0),
             },
             "test": {
-                "sharpe": metrics.get("test_sharpe", metrics.get("sharpe", 0) * 0.8),
-                "fitness": metrics.get("test_fitness", metrics.get("fitness", 0)),
+                "sharpe": test_sharpe_val if test_sharpe_val is not None else metrics.get("sharpe", 0) * 0.8,
+                "fitness": test_fitness_val if test_fitness_val is not None else metrics.get("fitness", 0),
             },
             "riskNeutralized": metrics.get("riskNeutralized", {}),
             "investabilityConstrained": metrics.get("investabilityConstrained", {}),
         }
         
         # Calculate composite score
+        prod_corr = 0.0
+        self_corr = 0.0
+
+        if brain and alpha.alpha_id:
+            try:
+                prod_corr_result = await brain.check_correlation(alpha.alpha_id, check_type="PROD")
+                if isinstance(prod_corr_result, dict):
+                    prod_corr = float(prod_corr_result.get("max", 0.0) or 0.0)
+            except Exception as e:
+                logger.warning(f"[{node_name}] PROD correlation check failed for {alpha.alpha_id}: {e}")
+
+            try:
+                self_corr_result = await brain.check_correlation(alpha.alpha_id, check_type="SELF")
+                if isinstance(self_corr_result, dict):
+                    self_corr = float(self_corr_result.get("max", 0.0) or 0.0)
+            except Exception as e:
+                logger.warning(f"[{node_name}] SELF correlation check failed for {alpha.alpha_id}: {e}")
+
         score = calculate_alpha_score(
             sim_result=sim_result,
-            prod_corr=0.0,  # TODO: Integrate correlation check
-            self_corr=0.0
+            prod_corr=prod_corr,
+            self_corr=self_corr
         )
         
         # Get optimization recommendation
@@ -934,6 +957,8 @@ async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Di
         alpha.metrics = {
             **metrics,
             "_score": round(score, 4),
+            "_prod_corr": round(prod_corr, 4) if prod_corr is not None else None,
+            "_self_corr": round(self_corr, 4) if self_corr is not None else None,
             "_should_optimize": should_opt,
             "_optimize_reason": opt_reason,
             "_failed_tests": failed_tests,

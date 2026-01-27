@@ -586,6 +586,10 @@ class BrainAdapter:
                 return {"success": False, "error": "Failed to parse alpha response"}
             
             # Return full alpha data with structured metrics
+            train_stats = alpha.get("train") or {}
+            test_stats = alpha.get("test") or {}
+            os_stats = alpha.get("os") or {}
+
             return {
                 "success": True, 
                 "alpha_id": alpha.get("id"),
@@ -596,7 +600,25 @@ class BrainAdapter:
                     "returns": alpha.get("is", {}).get("returns"),
                     "turnover": alpha.get("is", {}).get("turnover"),
                     "fitness": alpha.get("is", {}).get("fitness"),
-                    "max_dd": alpha.get("is", {}).get("drawdown")
+                    "max_dd": alpha.get("is", {}).get("drawdown"),
+
+                    # Common fields consumed by node_evaluate (preferred over placeholders)
+                    "test_sharpe": test_stats.get("sharpe") if test_stats else None,
+                    "test_fitness": test_stats.get("fitness") if test_stats else None,
+                    "train_sharpe": train_stats.get("sharpe") if train_stats else None,
+                    "train_fitness": train_stats.get("fitness") if train_stats else None,
+
+                    # Provide investability/risk dictionaries so scoring can use them
+                    "investabilityConstrained": (alpha.get("is") or {}).get("investabilityConstrained")
+                    or (train_stats.get("investabilityConstrained") if train_stats else {})
+                    or {},
+                    "riskNeutralized": (alpha.get("is") or {}).get("riskNeutralized")
+                    or (train_stats.get("riskNeutralized") if train_stats else {})
+                    or {},
+
+                    # OS stats (if present; sometimes null)
+                    "os_sharpe": os_stats.get("sharpe") if os_stats else None,
+                    "os_fitness": os_stats.get("fitness") if os_stats else None,
                 },
                 "is": alpha.get("is", {}),
                 "os": alpha.get("os", {}),

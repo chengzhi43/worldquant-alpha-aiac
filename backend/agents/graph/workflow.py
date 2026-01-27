@@ -116,8 +116,11 @@ class MiningWorkflow:
             partial(node_simulate, brain=self.brain)
         )
         
-        # Evaluation node (no external deps)
-        workflow.add_node("evaluate", node_evaluate)
+        # Evaluation node
+        workflow.add_node(
+            "evaluate",
+            partial(node_evaluate, brain=self.brain)
+        )
         
         # Save results node (handles both success and failure saving)
         workflow.add_node("save_results", node_save_results)
@@ -250,11 +253,15 @@ class MiningWorkflow:
         from backend.models import Alpha, AlphaFailure, TraceStep
         
         result = await self.run(task, dataset_id, fields, operators, num_alphas, config)
+
+        configurable = (config or {}).get("configurable", {})
+        run_id = configurable.get("run_id")
         
         # Persist alphas
         for alpha_result in result.get("generated_alphas", []):
             alpha = Alpha(
                 task_id=task.id,
+                run_id=run_id,
                 alpha_id=alpha_result.alpha_id,
                 expression=alpha_result.expression,
                 hypothesis=alpha_result.hypothesis,
@@ -262,7 +269,6 @@ class MiningWorkflow:
                 region=task.region,
                 universe=task.universe,
                 dataset_id=dataset_id,
-                simulation_status="SUCCESS",
                 quality_status=alpha_result.quality_status,
                 metrics=alpha_result.metrics
             )
@@ -272,6 +278,7 @@ class MiningWorkflow:
         for failure in result.get("failures", []):
             fail_record = AlphaFailure(
                 task_id=task.id,
+                run_id=run_id,
                 expression=failure.expression,
                 error_type=failure.error_type,
                 error_message=failure.error_message
@@ -286,6 +293,7 @@ class MiningWorkflow:
             for trace in result.get("trace_steps", []):
                 step = TraceStep(
                     task_id=task.id,
+                    run_id=run_id,
                     step_type=trace.step_type,
                     step_order=trace.step_order,
                     input_data=trace.input_data,

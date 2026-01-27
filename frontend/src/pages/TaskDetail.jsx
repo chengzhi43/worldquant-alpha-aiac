@@ -10,10 +10,12 @@ import {
   Button, 
   Space, 
   Descriptions,
+  Table,
   Timeline,
   Collapse,
   Spin,
   Empty,
+  Select,
   message,
 } from 'antd'
 import {
@@ -58,6 +60,8 @@ export default function TaskDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
 
+  const [selectedRunId, setSelectedRunId] = React.useState(null)
+
   // Fetch task details with trace
   const { data: task, isLoading, error } = useQuery({
     queryKey: ['task', id],
@@ -65,14 +69,88 @@ export default function TaskDetail() {
     refetchInterval: 5000, // Refresh while task is running
   })
 
+  const { data: runs } = useQuery({
+    queryKey: ['taskRuns', id],
+    queryFn: () => api.getTaskRuns(id),
+    enabled: !!id,
+    refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
+  })
+
+  React.useEffect(() => {
+    if (!runs || runs.length === 0) return
+    if (selectedRunId == null) {
+      setSelectedRunId(runs[0].id)
+    }
+  }, [runs, selectedRunId])
+
+  const { data: runTrace } = useQuery({
+    queryKey: ['runTrace', selectedRunId],
+    queryFn: () => api.getRunTrace(selectedRunId),
+    enabled: !!selectedRunId,
+    refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
+  })
+
+  const { data: runAlphasResp, isLoading: isRunAlphasLoading } = useQuery({
+    queryKey: ['runAlphas', selectedRunId],
+    queryFn: () => api.getRunAlphas(selectedRunId, { limit: 200, offset: 0 }),
+    enabled: !!selectedRunId,
+    refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
+  })
+
+  const runAlphas = React.useMemo(() => runAlphasResp?.items || [], [runAlphasResp])
+
+  const runAlphaSummary = React.useMemo(() => {
+    const counts = { PASS: 0, OPTIMIZE: 0, FAIL: 0, OTHER: 0 }
+    const scores = []
+    const sharpes = []
+
+    for (const a of runAlphas) {
+      const status = a.quality_status || 'OTHER'
+      if (status === 'PASS') counts.PASS += 1
+      else if (status === 'OPTIMIZE') counts.OPTIMIZE += 1
+      else if (status === 'FAIL') counts.FAIL += 1
+      else counts.OTHER += 1
+
+      const s = a.metrics?._score
+      if (typeof s === 'number') scores.push(s)
+
+      const sh = a.metrics?.sharpe
+      if (typeof sh === 'number') sharpes.push(sh)
+    }
+
+    const avgScore = scores.length ? scores.reduce((x, y) => x + y, 0) / scores.length : null
+    const bestScore = scores.length ? Math.max(...scores) : null
+    const avgSharpe = sharpes.length ? sharpes.reduce((x, y) => x + y, 0) / sharpes.length : null
+    const bestSharpe = sharpes.length ? Math.max(...sharpes) : null
+
+    const top = [...runAlphas]
+      .filter(a => typeof a.metrics?._score === 'number')
+      .sort((a, b) => (b.metrics?._score ?? -Infinity) - (a.metrics?._score ?? -Infinity))
+      .slice(0, 8)
+
+    return {
+      counts,
+      avgScore,
+      bestScore,
+      avgSharpe,
+      bestSharpe,
+      top,
+    }
+  }, [runAlphas])
+
   const queryClient = useQueryClient()
 
   // Start task mutation
   const startTaskMutation = useMutation({
     mutationFn: api.startTask,
-    onSuccess: () => {
+    onSuccess: (data) => {
       message.success('任务已启动')
       queryClient.invalidateQueries(['task', id])
+      queryClient.invalidateQueries(['taskRuns', id])
+      if (data?.run_id) {
+        setSelectedRunId(data.run_id)
+        queryClient.invalidateQueries(['runTrace', data.run_id])
+      }
     },
     onError: (err) => {
         message.error(`启动失败: ${err.message}`)
@@ -90,13 +168,16 @@ export default function TaskDetail() {
   })
 
   const { Panel } = Collapse
+  const [activeIterations, setActiveIterations] = React.useState([])
+  const lastMaxIterationRef = React.useRef(0)
   
   // Sort and group steps by iteration
   const groupedSteps = React.useMemo(() => {
-    if (!task?.trace_steps) return {}
+    const traceSteps = runTrace || task?.trace_steps
+    if (!traceSteps) return {}
     
     // Sort steps by ID/order first
-    const sortedSteps = [...task.trace_steps].sort((a, b) => a.step_order - b.step_order)
+    const sortedSteps = [...traceSteps].sort((a, b) => a.step_order - b.step_order)
     
     const groups = {}
     sortedSteps.forEach(step => {
@@ -107,14 +188,16 @@ export default function TaskDetail() {
       groups[iter].push(step)
     })
     return groups
-  }, [task?.trace_steps])
+  }, [runTrace, task?.trace_steps])
 
   // Get iteration numbers sorted descending (latest first)
   const iterations = Object.keys(groupedSteps).map(Number).sort((a, b) => b - a)
   
   // Active keys for collapse
-  const [activeIterations, setActiveIterations] = React.useState([])
-  const lastMaxIterationRef = React.useRef(0)
+  React.useEffect(() => {
+    setActiveIterations([])
+    lastMaxIterationRef.current = 0
+  }, [selectedRunId])
 
   React.useEffect(() => {
     if (iterations.length > 0) {
@@ -259,6 +342,99 @@ export default function TaskDetail() {
               </Descriptions.Item>
             </Descriptions>
           </Card>
+
+          <Card className="glass-card" title="本次 Run 摘要" style={{ marginTop: 16 }}>
+            {!selectedRunId ? (
+              <Empty description="未选择 Run" />
+            ) : isRunAlphasLoading ? (
+              <div style={{ textAlign: 'center', padding: 24 }}>
+                <Spin />
+              </div>
+            ) : (
+              <>
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="Run ID">{selectedRunId}</Descriptions.Item>
+                  <Descriptions.Item label="数量">
+                    <Space wrap>
+                      <Tag color="green">PASS {runAlphaSummary.counts.PASS}</Tag>
+                      <Tag color="gold">OPTIMIZE {runAlphaSummary.counts.OPTIMIZE}</Tag>
+                      <Tag color="red">FAIL {runAlphaSummary.counts.FAIL}</Tag>
+                      {runAlphaSummary.counts.OTHER > 0 && (
+                        <Tag>OTHER {runAlphaSummary.counts.OTHER}</Tag>
+                      )}
+                    </Space>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Score">
+                    <Space wrap>
+                      <Tag>Avg {runAlphaSummary.avgScore?.toFixed?.(3) ?? '--'}</Tag>
+                      <Tag>Best {runAlphaSummary.bestScore?.toFixed?.(3) ?? '--'}</Tag>
+                    </Space>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Sharpe">
+                    <Space wrap>
+                      <Tag>Avg {runAlphaSummary.avgSharpe?.toFixed?.(2) ?? '--'}</Tag>
+                      <Tag>Best {runAlphaSummary.bestSharpe?.toFixed?.(2) ?? '--'}</Tag>
+                    </Space>
+                  </Descriptions.Item>
+                </Descriptions>
+
+                <div style={{ marginTop: 12 }}>
+                  <Table
+                    size="small"
+                    pagination={false}
+                    dataSource={runAlphaSummary.top.map(a => ({
+                      key: a.id,
+                      id: a.id,
+                      alpha_id: a.alpha_id,
+                      quality_status: a.quality_status,
+                      score: a.metrics?._score,
+                      sharpe: a.metrics?.sharpe,
+                      turnover: a.metrics?.turnover,
+                    }))}
+                    columns={[
+                      {
+                        title: 'ID',
+                        dataIndex: 'alpha_id',
+                        key: 'alpha_id',
+                        width: 90,
+                        render: (v, r) => v || `#${r.id}`,
+                      },
+                      {
+                        title: '状态',
+                        dataIndex: 'quality_status',
+                        key: 'quality_status',
+                        width: 90,
+                        render: (s) => (
+                          <Tag color={s === 'PASS' ? 'green' : (s === 'OPTIMIZE' ? 'gold' : 'red')}>{s}</Tag>
+                        ),
+                      },
+                      {
+                        title: 'Score',
+                        dataIndex: 'score',
+                        key: 'score',
+                        width: 80,
+                        render: (v) => (typeof v === 'number' ? v.toFixed(3) : '--'),
+                      },
+                      {
+                        title: 'Sharpe',
+                        dataIndex: 'sharpe',
+                        key: 'sharpe',
+                        width: 80,
+                        render: (v) => (typeof v === 'number' ? v.toFixed(2) : '--'),
+                      },
+                      {
+                        title: 'TO',
+                        dataIndex: 'turnover',
+                        key: 'turnover',
+                        width: 70,
+                        render: (v) => (typeof v === 'number' ? v.toFixed(2) : '--'),
+                      },
+                    ]}
+                  />
+                </div>
+              </>
+            )}
+          </Card>
         </Col>
 
         {/* Right: Trace Timeline */}
@@ -266,9 +442,24 @@ export default function TaskDetail() {
           <Card 
             className="glass-card" 
             title="挖掘轨迹 (进化循环)"
-            extra={<Text type="secondary">共 {task.trace_steps?.length || 0} 步 / {iterations.length} 轮</Text>}
+            extra={(
+              <Space>
+                <Text type="secondary">Run</Text>
+                <Select
+                  size="small"
+                  style={{ width: 260 }}
+                  value={selectedRunId}
+                  onChange={setSelectedRunId}
+                  options={(runs || []).map(r => ({
+                    value: r.id,
+                    label: `#${r.id} ${r.status} ${r.started_at ? new Date(r.started_at).toLocaleString() : ''}`,
+                  }))}
+                />
+                <Text type="secondary">共 {(runTrace || task.trace_steps)?.length || 0} 步 / {iterations.length} 轮</Text>
+              </Space>
+            )}
           >
-            {task.trace_steps && task.trace_steps.length > 0 ? (
+            {(runTrace || task.trace_steps) && (runTrace || task.trace_steps).length > 0 ? (
               <Collapse 
                 bordered={false} 
                 activeKey={activeIterations} 
@@ -444,24 +635,31 @@ export default function TaskDetail() {
                                    ))}
                                  </div>
                                )}
-         
-                               {/* EVALUATE: Show Pass/Fail Details */}
+
                                {step.step_type === 'EVALUATE' && step.output_data?.details && (
                                  <div style={{ marginTop: 8 }}>
                                    <Text type="secondary" style={{ fontSize: 12 }}>
-                                     评估结果: ✅ {step.output_data.pass_count || 0} 通过, ❌ {step.output_data.fail_count || 0} 失败
+                                     评估结果: ✅ {step.output_data.pass_count || 0} 通过, ⚡ {step.output_data.optimize_count || 0} 优化, ❌ {step.output_data.fail_count || 0} 失败
                                    </Text>
                                    {step.output_data.details.map((d, i) => (
-                                     <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                                       <Tag color={d.pass ? 'green' : 'red'} style={{ fontSize: 11 }}>
-                                         {d.pass ? '✓' : '✗'} {d.id || `#${i+1}`}
+                                     <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                                       <Tag
+                                         color={d.status === 'PASS' ? 'green' : (d.status === 'OPTIMIZE' ? 'gold' : 'red')}
+                                         style={{ fontSize: 11 }}
+                                       >
+                                         {d.status} {d.id || `#${i+1}`}
                                        </Tag>
                                        <Space size="small" wrap>
+                                         <Tag>Score: {d.score?.toFixed?.(3) ?? d.score ?? '--'}</Tag>
                                          <Tag color={d.sharpe >= 1.5 ? 'green' : 'default'}>Sharpe: {d.sharpe?.toFixed(2) ?? '--'}</Tag>
-                                         <Tag>Returns: {(d.returns * 100)?.toFixed(1) ?? '--'}%</Tag>
                                          <Tag color={d.turnover <= 0.3 ? 'green' : 'orange'}>Turnover: {d.turnover?.toFixed(2) ?? '--'}</Tag>
                                          <Tag>Fitness: {d.fitness?.toFixed(2) ?? '--'}</Tag>
                                        </Space>
+                                       {d.optimize_reason && (
+                                         <Text type="secondary" style={{ fontSize: 11 }}>
+                                           {d.optimize_reason}
+                                         </Text>
+                                       )}
                                      </div>
                                    ))}
                                  </div>

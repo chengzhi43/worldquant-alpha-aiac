@@ -51,10 +51,18 @@ class TraceService:
     - Step order management
     """
     
-    def __init__(self, db: AsyncSession, task_id: int, initial_step_order: int = 0, iteration: int = 1):
+    def __init__(
+        self,
+        db: AsyncSession,
+        task_id: int,
+        initial_step_order: int = 0,
+        iteration: int = 1,
+        run_id: int | None = None,
+    ):
         self.db = db
         self.task_id = task_id
         self.iteration = iteration
+        self.run_id = run_id
         self.current_step_order = initial_step_order
         self._pending_records: List[TraceStepRecord] = []
         
@@ -103,6 +111,7 @@ class TraceService:
         """
         trace_step = TraceStep(
             task_id=self.task_id,
+            run_id=self.run_id,
             step_type=record.step_type,
             step_order=record.step_order,
             iteration=self.iteration,
@@ -139,6 +148,7 @@ class TraceService:
         for record in self._pending_records:
             trace_step = TraceStep(
                 task_id=self.task_id,
+                run_id=self.run_id,
                 step_type=record.step_type,
                 step_order=record.step_order,
                 iteration=self.iteration,

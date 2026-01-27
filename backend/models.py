@@ -345,7 +345,6 @@ class MiningTask(SQLAlchemyBase):
     
     status = Column(String(50), default="PENDING")
     daily_goal = Column(Integer, default=4)
-    daily_goal = Column(Integer, default=4)
     progress_current = Column(Integer, default=0)
     
     # Evolution tracking
@@ -360,12 +359,37 @@ class MiningTask(SQLAlchemyBase):
     trace_steps = relationship("TraceStep", back_populates="task", order_by="TraceStep.step_order")
     alphas = relationship("Alpha", back_populates="task")
 
+
+class ExperimentRun(SQLAlchemyBase):
+    __tablename__ = "experiment_runs"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=False)
+
+    status = Column(String(50), default="RUNNING")
+    trigger_source = Column(String(50), default="API")
+    celery_task_id = Column(String(100))
+
+    config_snapshot = Column(JSONB, default={})
+    prompt_version = Column(String(100))
+    thresholds_version = Column(String(100))
+    strategy_snapshot = Column(JSONB, default={})
+
+    started_at = Column(DateTime, server_default=func.now())
+    finished_at = Column(DateTime)
+    error_message = Column(Text)
+
+    task = relationship("MiningTask")
+
 class TraceStep(SQLAlchemyBase):
     __tablename__ = "trace_steps"
     __table_args__ = {'extend_existing': True}
     
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=False)
+
+    run_id = Column(Integer, ForeignKey("experiment_runs.id"), nullable=True)
     
     step_type = Column(String(50), nullable=False)
     step_order = Column(Integer, nullable=False)
@@ -397,6 +421,8 @@ class Alpha(SQLAlchemyBase):
     task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=True)
     trace_step_id = Column(Integer, ForeignKey("trace_steps.id"), nullable=True)
     template_id = Column(Integer, ForeignKey("templates.id"))
+
+    run_id = Column(Integer, ForeignKey("experiment_runs.id"), nullable=True)
     
     # Core Info
     expression = Column(Text, nullable=False)
@@ -478,6 +504,8 @@ class AlphaFailure(SQLAlchemyBase):
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=True)
     trace_step_id = Column(Integer, ForeignKey("trace_steps.id"), nullable=True)
+
+    run_id = Column(Integer, ForeignKey("experiment_runs.id"), nullable=True)
     
     expression = Column(Text, nullable=True)
     error_type = Column(String(100), nullable=True)  # SYNTAX_ERROR, FIELD_NOT_FOUND, TIMEOUT, etc.

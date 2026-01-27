@@ -91,7 +91,8 @@ class MiningAgent:
         operators: List[Dict],
         num_alphas: int = 3,
         iteration: int = 1,
-        strategy: Optional[EvolutionStrategy] = None
+        strategy: Optional[EvolutionStrategy] = None,
+        run_id: Optional[int] = None,
     ) -> List[Alpha]:
         """
         Run a single mining iteration with strategy application.
@@ -119,7 +120,7 @@ class MiningAgent:
         )
         
         # Initialize TraceService
-        trace_service = TraceService(self.db, task.id, iteration=iteration)
+        trace_service = TraceService(self.db, task.id, iteration=iteration, run_id=run_id)
         
         try:
             # Run workflow with strategy context
@@ -133,6 +134,7 @@ class MiningAgent:
                     "configurable": {
                         "trace_service": trace_service,
                         "strategy": strategy.to_dict(),  # Pass strategy to all nodes
+                        "run_id": run_id,
                     }
                 }
             )
@@ -227,7 +229,8 @@ class MiningAgent:
         max_iterations: int = 10,
         target_alphas: int = 4,
         num_alphas_per_round: int = 4,
-        initial_strategy: Optional[EvolutionStrategy] = None
+        initial_strategy: Optional[EvolutionStrategy] = None,
+        run_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run multi-round evolution loop for alpha mining.
@@ -286,7 +289,8 @@ class MiningAgent:
                         operators=operators,
                         num_alphas=num_alphas_per_round,
                         iteration=iteration,
-                        strategy=current_strategy
+                        strategy=current_strategy,
+                        run_id=run_id,
                     )
                     
                     # Analyze round results
@@ -340,7 +344,8 @@ class MiningAgent:
                         round_result=round_result,
                         strategy=current_strategy,
                         cumulative_success=total_success,
-                        target_alphas=target_alphas
+                        target_alphas=target_alphas,
+                        run_id=run_id,
                     )
                     
                     # === FEEDBACK LEARNING ===
@@ -640,14 +645,16 @@ class MiningAgent:
         round_result: RoundResult,
         strategy: EvolutionStrategy,
         cumulative_success: int,
-        target_alphas: int
+        target_alphas: int,
+        run_id: Optional[int] = None,
     ):
         """Record comprehensive round summary for tracing."""
         try:
             trace_service = TraceService(
                 self.db, task.id, 
                 initial_step_order=99, 
-                iteration=iteration
+                iteration=iteration,
+                run_id=run_id,
             )
             
             record = trace_service.create_record(

@@ -213,6 +213,9 @@ Focus on variations and refinements of successful approaches."""
 
 {build_strategy_constraints(ctx)}
 
+**CRITICAL CONSTRAINT**:
+You MUST Use ONLY the provided fields. Do NOT assume the existence of 'close', 'open', 'volume', 'returns', or 'cap' unless explicitly listed in the available fields section above. Hallucinating fields will cause immediate failure.
+
 ## Strategy
 {strategy_section}
 {hypothesis_guidance}

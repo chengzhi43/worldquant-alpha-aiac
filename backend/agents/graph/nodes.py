@@ -252,9 +252,21 @@ async def node_distill_context(state: MiningState, llm_service: LLMService, conf
         # Exact or partial match strategy
         for f in full_field_list:
             f_cat = f.get("category") or "General"
-            # If any selected concept is a substring of category (or vice versa)
-            if any(c.lower() in f_cat.lower() or f_cat.lower() in c.lower() for c in selected_concepts):
-                focused_fields.append(f)
+            f_id = str(f.get("id", "")).lower()
+            f_name = str(f.get("name", "")).lower()
+            
+            # Match against category, ID, or Name
+            # If any selected concept matches any part of field metadata
+            for c in selected_concepts:
+                c_lower = c.lower()
+                # 1. Category match (substring)
+                if c_lower in f_cat.lower() or f_cat.lower() in c_lower:
+                    focused_fields.append(f)
+                    break
+                # 2. Field ID/Name match (substring)
+                if c_lower in f_id or c_lower in f_name:
+                    focused_fields.append(f)
+                    break
                 
     # Fallback: if distillation failed or returned 0, use top 30 fields
     if not focused_fields:
@@ -833,7 +845,7 @@ async def node_evaluate(state: MiningState, config: RunnableConfig = None) -> Di
         - pending_alphas (with quality_status and score)
         - trace_steps
     """
-    from alpha_scoring import calculate_alpha_score, should_optimize, get_failed_tests
+    from backend.alpha_scoring import calculate_alpha_score, should_optimize, get_failed_tests
     
     start_time = time.time()
     node_name = "EVALUATE"

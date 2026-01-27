@@ -96,11 +96,12 @@ chmod +x start.sh
 ./start.sh
 ```
 
-启动脚本会自动：
-1. 检查并创建 `.env` 配置文件
-2. 可选安装依赖
-3. 可选初始化/重置数据库
-4. 启动 Backend、Frontend 和 Celery Worker
+启动脚本会**自动检测**环境状态：
+1. 检查 `.env` 配置文件（不存在则创建并打开编辑）
+2. 检测 Python 虚拟环境和依赖（缺失自动安装）
+3. 检测 Node.js 依赖（缺失自动安装）
+4. 检测数据库连接（失败自动创建）
+5. 启动 Backend、Frontend 和 Celery Worker
 
 ### 方法二：手动启动
 

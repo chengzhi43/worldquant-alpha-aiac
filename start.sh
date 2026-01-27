@@ -9,35 +9,70 @@ if [ ! -f ".env" ]; then
     echo "[INFO] .env not found. Creating from .env.example..."
     cp .env.example .env
     echo "[IMPORTANT] Please edit .env file to configure your credentials!"
-    read -p "Press Enter to continue after editing .env..."
+    ${EDITOR:-nano} .env
 fi
 
-# 2. Install Dependencies
-read -p "Install dependencies? (y/n) [n]: " install_deps
-if [ "$install_deps" = "y" ] || [ "$install_deps" = "Y" ]; then
+# 2. Auto-detect and install dependencies if needed
+if [ ! -d "venv" ]; then
+    echo "[INFO] Virtual environment not found. Creating..."
+    python3 -m venv venv
+fi
+
+source venv/bin/activate
+
+# Check if key packages are installed
+if ! pip show fastapi > /dev/null 2>&1; then
     echo "[INFO] Installing backend dependencies..."
     pip install -r requirements.txt
-    
+else
+    echo "[OK] Backend dependencies already installed."
+fi
+
+if [ ! -d "frontend/node_modules" ]; then
     echo "[INFO] Installing frontend dependencies..."
     cd frontend && npm install && cd ..
+else
+    echo "[OK] Frontend dependencies already installed."
 fi
 
-# 3. Database Setup (optional - tables are auto-created on app start)
-read -p "Create database if not exists? (y/n) [n]: " init_db
-if [ "$init_db" = "y" ] || [ "$init_db" = "Y" ]; then
-    echo "[INFO] Creating database if not exists..."
-    echo "[NOTE] Make sure PostgreSQL is running and credentials are set in .env file."
+# 3. Auto-detect database
+echo "[INFO] Checking database connection..."
+python3 -c "
+from backend.config import settings
+import psycopg2
+try:
+    conn = psycopg2.connect(
+        host=settings.POSTGRES_SERVER,
+        port=settings.POSTGRES_PORT,
+        user=settings.POSTGRES_USER,
+        password=settings.POSTGRES_PASSWORD,
+        database='postgres'
+    )
+    cur = conn.cursor()
+    cur.execute('SELECT 1 FROM pg_database WHERE datname=%s', (settings.POSTGRES_DB,))
+    exists = cur.fetchone()
+    conn.close()
+    exit(0 if exists else 1)
+except:
+    exit(1)
+" 2>/dev/null
+
+if [ $? -ne 0 ]; then
+    echo "[INFO] Database not found or connection failed. Attempting to create..."
     python backend/migrations/init_database.py
+else
+    echo "[OK] Database connection verified."
 fi
 
-# 4. Start Server
-read -p "Enter Backend Port (default 8001): " port
-if [ -z "$port" ]; then
-    port=8001
-fi
+# 4. Start Services
+PORT=8001
 
-echo "[INFO] Starting Backend on port $port..."
-uvicorn backend.main:app --reload --port $port &
+echo ""
+echo "[INFO] Starting services..."
+echo ""
+
+echo "[INFO] Starting Backend on port $PORT..."
+uvicorn backend.main:app --reload --port $PORT &
 BACKEND_PID=$!
 
 echo "[INFO] Starting Frontend..."
@@ -50,15 +85,19 @@ celery -A backend.celery_app worker --loglevel=info &
 CELERY_PID=$!
 
 echo ""
-echo "[SUCCESS] Services started!"
-echo "Backend: http://localhost:$port"
-echo "Frontend: http://localhost:5174"
+echo "=========================================="
+echo "            Services Started!"
+echo "=========================================="
 echo ""
-echo "[NOTE] Tables will be auto-created by SQLAlchemy on first request."
-echo "Press Ctrl+C to stop all services..."
+echo "  Backend:  http://localhost:$PORT"
+echo "  API Docs: http://localhost:$PORT/docs"
+echo "  Frontend: http://localhost:5174"
+echo ""
+echo "  Press Ctrl+C to stop all services..."
+echo "=========================================="
 
 # Handle graceful shutdown
-trap "kill $BACKEND_PID $FRONTEND_PID $CELERY_PID 2>/dev/null; exit" SIGINT SIGTERM
+trap "echo ''; echo '[INFO] Stopping services...'; kill $BACKEND_PID $FRONTEND_PID $CELERY_PID 2>/dev/null; exit" SIGINT SIGTERM
 
 # Wait for any process to exit
 wait

@@ -67,186 +67,10 @@ class KnowledgeEntryType(str, enum.Enum):
 # =============================================================================
 # CORE MODELS
 # =============================================================================
-
-class MiningTask(SQLAlchemyBase):
-    """
-    Mining Task - Represents a daily or on-demand mining session.
-    Enhanced with dataset_strategy, agent_mode, and progress tracking.
-    """
-    __tablename__ = "mining_tasks"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    task_name = Column(String(255), nullable=False)
-    region = Column(String(50), nullable=False)
-    universe = Column(String(100), nullable=False)
-    
-    # Strategy settings (from Alpha-GPT)
-    dataset_strategy = Column(String(50), default="AUTO")  # AUTO or SPECIFIC
-    target_datasets = Column(JSONB, default=[])  # If SPECIFIC, list of dataset IDs
-    agent_mode = Column(String(50), default="AUTONOMOUS")  # AUTONOMOUS or INTERACTIVE
-    
-    # Progress tracking
-    status = Column(String(50), default="PENDING")
-    daily_goal = Column(Integer, default=4)
-    progress_current = Column(Integer, default=0)
-    
-    # Configuration (thresholds, budgets)
-    config = Column(JSONB, default={})
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
-    
-    # Relationships
-    trace_steps = relationship("TraceStep", back_populates="task", order_by="TraceStep.step_order")
-    alphas = relationship("Alpha", back_populates="task")
-
-
-class TraceStep(SQLAlchemyBase):
-    """
-    Trace Step - Records each step in the mining process (RD-Agent style).
-    Enables full transparency and reproducibility.
-    """
-    __tablename__ = "trace_steps"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=False)
-    
-    # Step metadata
-    step_type = Column(String(50), nullable=False)  # RAG_QUERY, HYPOTHESIS, CODE_GEN, etc.
-    step_order = Column(Integer, nullable=False)
-    iteration = Column(Integer, default=1) # Iteration number for multi-round loop
-    
-    # Input/Output for transparency
-    input_data = Column(JSONB, default={})   # E.g., RAG query, prompt
-    output_data = Column(JSONB, default={})  # E.g., retrieved docs, generated code
-    
-    # Performance
-    duration_ms = Column(Integer, nullable=True)
-    status = Column(String(50), default="RUNNING")  # RUNNING, SUCCESS, FAILED, SKIPPED
-    error_message = Column(Text, nullable=True)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # Relationships
-    task = relationship("MiningTask", back_populates="trace_steps")
-    alpha = relationship("Alpha", back_populates="trace_step", uselist=False)
-    
-    __table_args__ = (
-        Index("idx_trace_task_order", "task_id", "step_order"),
-    )
-
-
-class Alpha(SQLAlchemyBase):
-    """
-    Alpha - Stores mined alpha expressions with full metadata.
-    Enhanced with hypothesis, trace linkage, and human feedback.
-    """
-    __tablename__ = "alpha_base"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=True)
-    trace_step_id = Column(Integer, ForeignKey("trace_steps.id"), nullable=True)
-    
-    # Alpha identity
-    alpha_id = Column(String(100), unique=True, index=True, nullable=True)  # BRAIN Alpha ID
-    expression = Column(Text, nullable=False)
-    
-    # Generation context (Alpha-GPT style)
-    hypothesis = Column(Text, nullable=True)  # The hypothesis behind this alpha
-    logic_explanation = Column(Text, nullable=True)  # LLM-generated explanation
-    
-    # Metadata
-    region = Column(String(50), nullable=True)
-    universe = Column(String(100), nullable=True)
-    dataset_id = Column(String(100), nullable=True)
-    fields_used = Column(JSONB, default=[])
-    operators_used = Column(JSONB, default=[])
-    
-    # Status tracking
-    simulation_status = Column(String(50), default="PENDING")
-    quality_status = Column(String(50), default="PENDING")  # PASS, REJECT
-    diversity_status = Column(String(50), default="PENDING")  # PASS, DUPLICATE
-    
-    # Human feedback (Human-in-the-Loop)
-    human_feedback = Column(String(50), default="NONE")  # NONE, LIKED, DISLIKED
-    feedback_comment = Column(Text, nullable=True)
-    
-    # Performance metrics
-    metrics = Column(JSONB, default={})  # {sharpe, turnover, returns, max_dd, fitness}
-    pnl_data = Column(JSONB, default={})  # For charting
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # Relationships
-    task = relationship("MiningTask", back_populates="alphas")
-    trace_step = relationship("TraceStep", back_populates="alpha")
-    
-    __table_args__ = (
-        Index("idx_alpha_region", "region"),
-        Index("idx_alpha_quality", "quality_status"),
-    )
-
-
-class AlphaFailure(SQLAlchemyBase):
-    """
-    Alpha Failure - Records failed alpha attempts for the feedback loop.
-    Used by Feedback Agent to learn and improve.
-    """
-    __tablename__ = "alpha_failures"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=True)
-    trace_step_id = Column(Integer, ForeignKey("trace_steps.id"), nullable=True)
-    
-    expression = Column(Text, nullable=True)
-    error_type = Column(String(100), nullable=True)  # SYNTAX_ERROR, FIELD_NOT_FOUND, TIMEOUT, etc.
-    error_message = Column(Text, nullable=True)
-    raw_response = Column(Text, nullable=True)
-    
-    # For feedback analysis
-    is_analyzed = Column(Boolean, default=False)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
+# Note: Core models (MiningTask, TraceStep, Alpha, AlphaFailure, KnowledgeEntry)
+# are defined in the "UPDATED CORE MODELS" section below (around line 500+)
+# to avoid duplication and SQLAlchemy mapper conflicts.
 # =============================================================================
-# KNOWLEDGE BASE MODELS (CoSTEER)
-# =============================================================================
-
-class KnowledgeEntry(SQLAlchemyBase):
-    """
-    Knowledge Entry - Stores learned patterns and pitfalls.
-    Core of the CoSTEER feedback loop.
-    """
-    __tablename__ = "knowledge_entries"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    
-    entry_type = Column(String(50), nullable=False)  # SUCCESS_PATTERN, FAILURE_PITFALL, etc.
-    
-    # Pattern description
-    pattern = Column(Text, nullable=True)  # E.g., "ts_rank + groupby_industry"
-    description = Column(Text, nullable=True)
-    
-    # Metadata (flexible)
-    meta_data = Column(JSONB, default={})
-    # Example for SUCCESS_PATTERN: {"datasets": ["price_volume"], "avg_sharpe": 1.92}
-    # Example for FAILURE_PITFALL: {"error_type": "HIGH_NAN_RATE", "failure_rate": 0.91}
-    # Example for FIELD_BLACKLIST: {"field": "analyst_target_price", "region": "CHN"}
-    
-    # Usage statistics
-    usage_count = Column(Integer, default=0)
-    is_active = Column(Boolean, default=True)
-    
-    # Origin
-    created_by = Column(String(50), default="SYSTEM")  # SYSTEM or USER
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
-    
-    __table_args__ = (
-        Index("idx_knowledge_type", "entry_type"),
-    )
 
 
 # =============================================================================
@@ -641,6 +465,30 @@ class Alpha(SQLAlchemyBase):
     
     task = relationship("MiningTask", back_populates="alphas")
     trace_step = relationship("TraceStep", back_populates="alpha")
+
+
+class AlphaFailure(SQLAlchemyBase):
+    """
+    Alpha Failure - Records failed alpha attempts for the feedback loop.
+    Used by Feedback Agent to learn and improve.
+    """
+    __tablename__ = "alpha_failures"
+    __table_args__ = {'extend_existing': True}
+    
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=True)
+    trace_step_id = Column(Integer, ForeignKey("trace_steps.id"), nullable=True)
+    
+    expression = Column(Text, nullable=True)
+    error_type = Column(String(100), nullable=True)  # SYNTAX_ERROR, FIELD_NOT_FOUND, TIMEOUT, etc.
+    error_message = Column(Text, nullable=True)
+    raw_response = Column(Text, nullable=True)
+    
+    # For feedback analysis
+    is_analyzed = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 
 class KnowledgeEntry(SQLAlchemyBase):
     __tablename__ = "knowledge_entries"

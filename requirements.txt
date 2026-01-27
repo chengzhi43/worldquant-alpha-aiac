@@ -29,6 +29,9 @@ langchain-openai>=0.2.0
 # Data Processing
 pandas>=2.1.4
 numpy>=1.26.3
+scipy>=1.11.0
+matplotlib>=3.8.0
+plotly>=5.18.0
 
 # Utilities
 python-dotenv>=1.0.0
@@ -50,3 +53,5 @@ loguru>=0.7.2
 
 # Security
 cryptography>=41.0.0
+
+ply

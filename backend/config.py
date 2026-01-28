@@ -60,6 +60,33 @@ class Settings(BaseSettings):
     SCORE_PASS_THRESHOLD: float = 0.8      # Composite score to pass
     SCORE_OPTIMIZE_THRESHOLD: float = 0.3  # Score threshold for optimization queue
     
+    # P0-3: Two-Stage Correlation Check
+    CORR_CHECK_THRESHOLD: float = 0.5      # Preliminary score threshold to trigger correlation check
+    
+    # P1-1: Dataset Bandit Selection
+    BANDIT_SELECTION_ENABLED: bool = True  # P1-fix-1: Enable adaptive dataset selection
+    BANDIT_EXPLORATION_WEIGHT: float = 2.0
+    BANDIT_PYRAMID_BONUS_WEIGHT: float = 0.3
+    BANDIT_SATURATION_PENALTY_WEIGHT: float = 0.2
+    BANDIT_TIME_DECAY_DAYS: int = 7
+    
+    # P1-2: Field Selection
+    FIELD_COVERAGE_WEIGHT: float = 0.3
+    FIELD_NOVELTY_WEIGHT: float = 0.4
+    FIELD_PYRAMID_WEIGHT: float = 0.3
+    FIELD_MIN_COVERAGE: float = 0.3
+    
+    # P1-4: Diversity Constraints
+    DIVERSITY_SIMILARITY_THRESHOLD: float = 0.7
+    BATCH_DEDUP_THRESHOLD: float = 0.9
+    
+    # P2-2: Multi-Fidelity Evaluation
+    MULTI_FIDELITY_ENABLED: bool = False   # Opt-in feature
+    QUICK_TEST_PERIOD: str = "P0Y3M"
+    MEDIUM_TEST_PERIOD: str = "P1Y0M"
+    FULL_TEST_PERIOD: str = "P2Y0M"
+    MAX_FULL_EVALS_PER_BATCH: int = 10
+    
     # Evolution Strategy Defaults
     DEFAULT_TEMPERATURE: float = 0.7
     DEFAULT_EXPLORATION_WEIGHT: float = 0.5

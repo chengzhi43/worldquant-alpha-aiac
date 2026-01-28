@@ -258,12 +258,19 @@ class MiningWorkflow:
         run_id = configurable.get("run_id")
         
         # Persist alphas
+        # P0-fix-2: Import hash function for deduplication
+        from backend.alpha_semantic_validator import compute_expression_hash
+        
         for alpha_result in result.get("generated_alphas", []):
+            # P0-fix-2: Compute expression hash for DB-level deduplication
+            expr_hash = compute_expression_hash(alpha_result.expression) if alpha_result.expression else None
+            
             alpha = Alpha(
                 task_id=task.id,
                 run_id=run_id,
                 alpha_id=alpha_result.alpha_id,
                 expression=alpha_result.expression,
+                expression_hash=expr_hash,  # P0-fix-2: Enable DB deduplication
                 hypothesis=alpha_result.hypothesis,
                 logic_explanation=alpha_result.explanation,
                 region=task.region,

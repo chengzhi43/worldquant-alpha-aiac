@@ -601,8 +601,14 @@ def sync_fields_from_brain(dataset_id: str, region: str = "USA", universe: str =
                         db.add(new_field)
                         count += 1
                 
-                # Update dataset field count
-                dataset.field_count = (dataset.field_count or 0) + count
+                # Update dataset field count - P0-4 FIX: Use actual total, not cumulative
+                # Query the real count of fields for this dataset to avoid drift
+                from sqlalchemy import func as sqla_func
+                total_fields_query = await db.execute(
+                    select(sqla_func.count(DataField.id)).where(DataField.dataset_id == dataset.id)
+                )
+                actual_field_count = total_fields_query.scalar() or 0
+                dataset.field_count = actual_field_count
                 dataset.last_synced_at = func.now()
                 
                 await db.commit()
@@ -737,15 +743,21 @@ def sync_user_alphas():
                                     
                                 updated += 1
                             else:
+                                # P0-fix-2: Compute expression hash for deduplication
+                                from backend.alpha_semantic_validator import compute_expression_hash
+                                expr_code = (
+                                    a_data.get("regular", {}).get("code") or 
+                                    a_data.get("combo", {}).get("code") or 
+                                    a_data.get("selection", {}).get("code") or
+                                    "N/A"
+                                )
+                                expr_hash = compute_expression_hash(expr_code) if expr_code != "N/A" else None
+                                
                                 new_alpha = Alpha(
                                     alpha_id=alpha_id,
                                     type=a_data.get("type"),
-                                    expression=(
-                                        a_data.get("regular", {}).get("code") or 
-                                        a_data.get("combo", {}).get("code") or 
-                                        a_data.get("selection", {}).get("code") or
-                                        "N/A" # Fallback to prevent NotNullViolation
-                                    ),
+                                    expression=expr_code,
+                                    expression_hash=expr_hash,  # P0-fix-2: Enable DB deduplication
                                     name=a_data.get("name"),
                                     region=settings.get("region"),
                                     universe=settings.get("universe"),

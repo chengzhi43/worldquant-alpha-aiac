@@ -171,27 +171,56 @@ export default function TaskDetail() {
   const [activeIterations, setActiveIterations] = React.useState([])
   const lastMaxIterationRef = React.useRef(0)
   
-  // Sort and group steps by iteration
+  // Sort and group steps by (dataset_id, iteration) to handle multi-dataset runs
   const groupedSteps = React.useMemo(() => {
     const traceSteps = runTrace || task?.trace_steps
     if (!traceSteps) return {}
     
-    // Sort steps by ID/order first
-    const sortedSteps = [...traceSteps].sort((a, b) => a.step_order - b.step_order)
+    // Sort steps by created_at or id first, then by step_order within each group
+    const sortedSteps = [...traceSteps].sort((a, b) => {
+      // Primary sort by id (chronological order)
+      return (a.id || 0) - (b.id || 0)
+    })
     
     const groups = {}
     sortedSteps.forEach(step => {
-      const iter = step.iteration || 1 // Default to 1 if missing
-      if (!groups[iter]) {
-        groups[iter] = []
+      const iter = step.iteration || 1
+      // Extract dataset_id from input_data if available
+      const datasetId = step.input_data?.dataset_id || 'default'
+      // Create composite key: "dataset_id::iteration"
+      const groupKey = `${datasetId}::${iter}`
+      
+      if (!groups[groupKey]) {
+        groups[groupKey] = {
+          steps: [],
+          iteration: iter,
+          dataset_id: datasetId,
+          // Use first step's created_at for ordering groups
+          firstCreatedAt: step.created_at
+        }
       }
-      groups[iter].push(step)
+      groups[groupKey].steps.push(step)
     })
+    
+    // Sort steps within each group by step_order
+    Object.values(groups).forEach(g => {
+      g.steps.sort((a, b) => (a.step_order || 0) - (b.step_order || 0))
+    })
+    
     return groups
   }, [runTrace, task?.trace_steps])
 
-  // Get iteration numbers sorted descending (latest first)
-  const iterations = Object.keys(groupedSteps).map(Number).sort((a, b) => b - a)
+  // Get group keys sorted by firstCreatedAt descending (latest first)
+  const iterationKeys = React.useMemo(() => {
+    return Object.entries(groupedSteps)
+      .sort((a, b) => {
+        // Sort by firstCreatedAt descending
+        const timeA = new Date(a[1].firstCreatedAt || 0).getTime()
+        const timeB = new Date(b[1].firstCreatedAt || 0).getTime()
+        return timeB - timeA
+      })
+      .map(([key]) => key)
+  }, [groupedSteps])
   
   // Active keys for collapse
   React.useEffect(() => {
@@ -200,15 +229,15 @@ export default function TaskDetail() {
   }, [selectedRunId])
 
   React.useEffect(() => {
-    if (iterations.length > 0) {
-      const currentMax = iterations[0]
-      // Only auto-expand if we see a NEW iteration (or first load)
-      if (currentMax > lastMaxIterationRef.current) {
-        setActiveIterations([currentMax.toString()])
-        lastMaxIterationRef.current = currentMax
+    if (iterationKeys.length > 0) {
+      const latestKey = iterationKeys[0]
+      // Only auto-expand if we see a NEW group (or first load)
+      if (latestKey !== lastMaxIterationRef.current) {
+        setActiveIterations([latestKey])
+        lastMaxIterationRef.current = latestKey
       }
     }
-  }, [iterations])
+  }, [iterationKeys])
 
   if (isLoading) {
     return (
@@ -455,7 +484,7 @@ export default function TaskDetail() {
                     label: `#${r.id} ${r.status} ${r.started_at ? new Date(r.started_at).toLocaleString() : ''}`,
                   }))}
                 />
-                <Text type="secondary">共 {(runTrace || task.trace_steps)?.length || 0} 步 / {iterations.length} 轮</Text>
+                <Text type="secondary">共 {(runTrace || task.trace_steps)?.length || 0} 步 / {iterationKeys.length} 轮</Text>
               </Space>
             )}
           >
@@ -467,14 +496,21 @@ export default function TaskDetail() {
                 className="site-collapse-custom-collapse"
                 style={{ background: 'transparent' }}
               >
-                {iterations.map(iter => {
-                   const steps = groupedSteps[iter]
+                {iterationKeys.map(groupKey => {
+                   const group = groupedSteps[groupKey]
+                   const steps = group.steps
+                   const iter = group.iteration
+                   const datasetId = group.dataset_id
+                   
                    // Try to find summary step for this iteration
                    const summaryStep = steps.find(s => s.step_type === 'ROUND_SUMMARY')
                    
                    const header = (
                      <Space>
                        <Text strong>第 {iter} 轮</Text>
+                       {datasetId !== 'default' && (
+                         <Tag color="purple" style={{ fontSize: 11 }}>{datasetId}</Tag>
+                       )}
                        {summaryStep && summaryStep.output_data?.success_rate !== undefined && (
                          <Tag color={summaryStep.output_data.success_rate > 0 ? 'green' : 'orange'}>
                            成功率: {(summaryStep.output_data.success_rate * 100).toFixed(0)}%
@@ -485,7 +521,7 @@ export default function TaskDetail() {
                    )
 
                    return (
-                     <Panel header={header} key={iter.toString()} style={{ marginBottom: 12, border: '1px solid #303030', borderRadius: 8 }}>
+                     <Panel header={header} key={groupKey} style={{ marginBottom: 12, border: '1px solid #303030', borderRadius: 8 }}>
                        <Timeline mode="left" style={{ marginTop: 16 }}>
                          {steps.map((step) => (
                            <Timeline.Item

@@ -172,6 +172,11 @@ async def set_llm_credentials(
         
         # Invalidate credential caches
         CredentialsService.invalidate_cache()
+        try:
+            from backend.agents.services.llm_service import get_llm_service
+            get_llm_service().invalidate_credentials_cache()
+        except Exception:
+            pass
         
         return {
             "success": True,

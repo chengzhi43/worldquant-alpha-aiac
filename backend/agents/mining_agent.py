@@ -18,6 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from loguru import logger
 from datetime import datetime, timedelta
+import json, time, os  # #region agent log
+
+def _debug_log(hypo_id, location, message, data=None):
+    try:
+        log_path = r"e:\AIACV2_v1.2\worldquant-alpha-aiac\.cursor\debug.log"
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        entry = {"hypothesisId": hypo_id, "location": location, "message": message, "data": data or {}, "timestamp": int(time.time()*1000), "sessionId": "debug-session"}
+        with open(log_path, "a", encoding="utf-8") as f: f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except: pass
+# #endregion
 
 from backend.models import MiningTask, Alpha, AlphaFailure
 from backend.agents.graph import MiningWorkflow, create_mining_graph
@@ -259,6 +269,10 @@ class MiningAgent:
             f"task={task.id} dataset={dataset_id} "
             f"max_iter={max_iterations} target={target_alphas}"
         )
+        # #region agent log
+        _debug_log("B", "mining_agent.py:run_evolution_loop:start", "Evolution loop start", {"dataset_id": dataset_id, "fields_count": len(fields), "operators_count": len(operators), "target": target_alphas})
+        loop_start_time = time.time()
+        # #endregion
         
         # Initialize state
         iteration = 0
@@ -279,6 +293,10 @@ class MiningAgent:
                     f"[MiningAgent] === Round {iteration}/{max_iterations} === "
                     f"Strategy: {current_strategy.action_summary}"
                 )
+                # #region agent log
+                round_start = time.time()
+                _debug_log("A", f"mining_agent.py:round_{iteration}:start", f"Round {iteration} start", {"strategy_mode": current_strategy.mode.value, "temperature": current_strategy.temperature})
+                # #endregion
                 
                 try:
                     # Execute mining iteration with current strategy
@@ -304,6 +322,21 @@ class MiningAgent:
                     total_success += round_result.passed_count
                     all_alphas.extend(alphas)
                     strategy_history.append(current_strategy)
+                    # #region agent log
+                    round_elapsed = time.time() - round_start
+                    _debug_log("A", f"mining_agent.py:round_{iteration}:end", f"Round {iteration} complete", {
+                        "elapsed_sec": round(round_elapsed, 2),
+                        "generated": round_result.total_generated,
+                        "simulated": round_result.total_simulated,
+                        "passed": round_result.passed_count,
+                        "failed": round_result.failed_count,
+                        "syntax_errors": round_result.syntax_errors,
+                        "simulation_errors": round_result.simulation_errors,
+                        "quality_failures": round_result.quality_failures,
+                        "best_sharpe": round_result.best_sharpe,
+                        "cumulative_success": total_success
+                    })
+                    # #endregion
                     
                     logger.info(
                         f"[MiningAgent] Round {iteration} | "

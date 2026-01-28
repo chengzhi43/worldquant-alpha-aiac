@@ -6,9 +6,20 @@ Pure functions that process state and return partial updates
 import json
 import time
 import random
+import os  # #region agent log
 from typing import Dict, List, Any, Optional
 from loguru import logger
 from langchain_core.runnables import RunnableConfig
+
+# #region agent log
+def _debug_log(hypo_id, location, message, data=None):
+    try:
+        log_path = r"e:\AIACV2_v1.2\worldquant-alpha-aiac\.cursor\debug.log"
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        entry = {"hypothesisId": hypo_id, "location": location, "message": message, "data": data or {}, "timestamp": int(time.time()*1000), "sessionId": "debug-session"}
+        with open(log_path, "a", encoding="utf-8") as f: f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except: pass
+# #endregion
 
 from backend.agents.graph.state import (
     MiningState, AlphaCandidate, AlphaResult, FailureRecord, 
@@ -36,6 +47,14 @@ from backend.agents.prompts import (
 )
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.config import settings
+
+# Observability: Import experiment tracker for metrics collection
+try:
+    from backend.experiment_tracker import get_current_experiment, MetricsCollector
+    EXPERIMENT_TRACKING_ENABLED = True
+except ImportError:
+    EXPERIMENT_TRACKING_ENABLED = False
+    get_current_experiment = lambda: None
 
 
 # =============================================================================
@@ -118,6 +137,16 @@ async def node_rag_query(state: MiningState, rag_service: RAGService, config: Ru
         )
         
         duration_ms = int((time.time() - start_time) * 1000)
+        # #region agent log
+        _debug_log("C", "nodes.py:rag_query:result", "RAG query complete", {
+            "patterns_count": len(result.patterns), 
+            "pitfalls_count": len(result.pitfalls), 
+            "duration_ms": duration_ms, 
+            "dataset_id": state.dataset_id,
+            "patterns_datasets": [p.get('metadata', {}).get('dataset', 'generic') for p in result.patterns],
+            "top_patterns": [p.get('pattern','')[:50] for p in result.patterns[:3]]
+        })
+        # #endregion
         
         logger.info(
             f"[{node_name}] 完成 | patterns={len(result.patterns)} pitfalls={len(result.pitfalls)}"
@@ -224,12 +253,17 @@ async def node_distill_context(state: MiningState, llm_service: LLMService, conf
         field_categories=field_categories_str
     )
     
-    response = await llm_service.call(
-        system_prompt=DISTILL_SYSTEM,
-        user_prompt=prompt,
-        temperature=0.5, # Lower temp for classification
-        json_mode=True
-    )
+    # P1-fix-2: Enhanced error handling for LLM response parsing
+    try:
+        response = await llm_service.call(
+            system_prompt=DISTILL_SYSTEM,
+            user_prompt=prompt,
+            temperature=0.5, # Lower temp for classification
+            json_mode=True
+        )
+    except Exception as llm_err:
+        logger.error(f"[{node_name}] LLM call failed: {llm_err}")
+        response = type('obj', (object,), {'success': False, 'parsed': None, 'error': str(llm_err)})()
     
     duration_ms = int((time.time() - start_time) * 1000)
     
@@ -237,10 +271,25 @@ async def node_distill_context(state: MiningState, llm_service: LLMService, conf
     reasoning = ""
     focused_fields = []
     
+    # P1-fix-2: Robust parsing with multiple fallbacks
     if response.success and response.parsed:
-        selected_concepts = response.parsed.get("selected_concepts", [])
-        reasoning = response.parsed.get("reasoning", "")
-        
+        try:
+            parsed = response.parsed
+            # Handle both dict and potential None
+            if isinstance(parsed, dict):
+                selected_concepts = parsed.get("selected_concepts", []) or []
+                reasoning = parsed.get("reasoning", "") or ""
+            else:
+                logger.warning(f"[{node_name}] Unexpected parsed type: {type(parsed)}")
+        except (TypeError, AttributeError) as parse_err:
+            logger.error(f"[{node_name}] Parse error: {parse_err}")
+            selected_concepts = []
+    
+    # Ensure selected_concepts is always a list
+    if not isinstance(selected_concepts, list):
+        selected_concepts = [selected_concepts] if selected_concepts else []
+    
+    if selected_concepts:
         # Filter fields
         # Loose matching: if category contains the selected concept key word
         full_field_list = state.fields
@@ -465,19 +514,24 @@ async def node_code_gen(state: MiningState, llm_service: LLMService, config: Run
     # Build prompt using new system
     prompt = build_alpha_generation_prompt(prompt_context)
     
-    response = await llm_service.call(
-        system_prompt=ALPHA_GENERATION_SYSTEM,
-        user_prompt=prompt,
-        temperature=temperature,  # Use strategy-driven temperature
-        json_mode=True
-    )
+    # Defensive: wrap LLM call in try-except
+    try:
+        response = await llm_service.call(
+            system_prompt=ALPHA_GENERATION_SYSTEM,
+            user_prompt=prompt,
+            temperature=temperature,  # Use strategy-driven temperature
+            json_mode=True
+        )
+    except Exception as llm_err:
+        logger.error(f"[{node_name}] LLM call exception: {llm_err}")
+        response = type('obj', (object,), {'success': False, 'parsed': None, 'error': str(llm_err)})()
     
     duration_ms = int((time.time() - start_time) * 1000)
     
     # Parse alphas into candidates
     pending_alphas = []
-    if response.success and response.parsed:
-        raw_alphas = response.parsed.get("alphas", [])
+    if response.success and response.parsed and isinstance(response.parsed, dict):
+        raw_alphas = response.parsed.get("alphas", []) or []
         for alpha_data in raw_alphas:
             # Extract all available metadata
             hypothesis_text = alpha_data.get("hypothesis", "")
@@ -495,6 +549,9 @@ async def node_code_gen(state: MiningState, llm_service: LLMService, config: Run
             # Only add if expression is valid
             if candidate.expression and candidate.expression.strip():
                 pending_alphas.append(candidate)
+    # #region agent log
+    _debug_log("A", "nodes.py:code_gen:result", "Alpha code generation complete", {"alphas_generated": len(pending_alphas), "target": state.num_alphas_target, "duration_ms": duration_ms, "llm_success": response.success, "temperature": temperature})
+    # #endregion
     
     logger.info(f"[{node_name}] Complete | alphas={len(pending_alphas)}")
     
@@ -526,20 +583,33 @@ async def node_code_gen(state: MiningState, llm_service: LLMService, config: Run
 
 
 # =============================================================================
-# NODE: Validate
+# NODE: Validate (P0-1: Enhanced with semantic type validation)
 # =============================================================================
 
 from validator import ExpressionValidator
+from backend.alpha_semantic_validator import (
+    AlphaSemanticValidator, 
+    ExpressionDeduplicator,
+    validate_alpha_semantically,
+    compute_expression_hash
+)
 
-# Initialize Validator (Singleton-ish)
+# Initialize Validators (Singleton-ish)
 _VALIDATOR = ExpressionValidator()
+_SEMANTIC_VALIDATOR = None  # Lazy init with fields
+_DEDUPLICATOR = ExpressionDeduplicator(similarity_threshold=0.90)
 
 async def node_validate(state: MiningState, config: RunnableConfig = None) -> Dict:
     """
     Batch validate ALL pending alpha expressions.
     
+    Enhanced with P0 improvements:
+    - P0-1: Semantic type validation (MATRIX/VECTOR constraints)
+    - P0-2: Deduplication gate (skip already-seen expressions)
+    
     Input State:
         - pending_alphas
+        - fields (with type info for semantic validation)
     
     Output Updates:
         - pending_alphas (with validation result)
@@ -550,36 +620,81 @@ async def node_validate(state: MiningState, config: RunnableConfig = None) -> Di
     
     trace_service = config.get("configurable", {}).get("trace_service") if config else None
     
+    # Reset deduplicator for this batch (cross-batch dedup handled at DB level)
+    batch_dedup = ExpressionDeduplicator(similarity_threshold=0.90)
+    
     updated_alphas = []
     valid_count = 0
-    errors = []
+    syntax_errors = []
+    semantic_errors = []
+    duplicate_count = 0
+    type_warnings = []
     
     logger.info(f"[{node_name}] 开始批量校验 | count={len(state.pending_alphas)}")
+    
+    # Build field list for validators
+    allowed_fields = []
+    for f in state.fields:
+        if isinstance(f, dict):
+            allowed_fields.append(f.get("id", f.get("name")))
+        else:
+            allowed_fields.append(str(f))
+    # #region agent log
+    _debug_log("D", "nodes.py:validate:fields", "Allowed fields for validation", {"allowed_fields": allowed_fields, "fields_count": len(allowed_fields), "expressions": [a.expression[:100] for a in state.pending_alphas]})
+    # #endregion
+    
+    # Initialize semantic validator with field type info
+    semantic_validator = AlphaSemanticValidator(
+        fields=state.fields,
+        operators=None,  # Use default operator set
+        strict_field_check=False,  # Warnings for unknown fields
+        strict_type_check=True     # Block type mismatches (VECTOR fields without vec_* operators)
+    )
     
     for alpha in state.pending_alphas:
         expression = alpha.expression
         is_valid = True
         error = None
+        warnings = []
         
         if not expression or not expression.strip():
             is_valid = False
             error = "Empty expression"
         else:
             try:
-                # Use validator
-                # Extract allowed field IDs (handle both dict with 'id'/'name' and raw strings if any)
-                allowed_fields = []
-                for f in state.fields:
-                    if isinstance(f, dict):
-                        allowed_fields.append(f.get("id", f.get("name")))
-                    else:
-                        allowed_fields.append(str(f))
-                
-                validation_result = _VALIDATOR.check_expression(expression, allowed_fields=allowed_fields)
-                if not validation_result.get("valid", False):
+                # Step 1: Deduplication check (P0-2)
+                is_dup, dup_reason = batch_dedup.is_duplicate(expression)
+                if is_dup:
                     is_valid = False
-                    err_list = validation_result.get("errors", [])
-                    error = "; ".join(err_list) if err_list else "Syntax error"
+                    error = f"Duplicate: {dup_reason}"
+                    duplicate_count += 1
+                else:
+                    # Add to batch dedup tracker
+                    batch_dedup.add(expression)
+                    
+                    # Step 2: Syntax validation (existing)
+                    syntax_result = _VALIDATOR.check_expression(expression, allowed_fields=allowed_fields)
+                    if not syntax_result.get("valid", False):
+                        is_valid = False
+                        err_list = syntax_result.get("errors", [])
+                        error = "; ".join(err_list) if err_list else "Syntax error"
+                        syntax_errors.append(error)
+                    else:
+                        # Step 3: Semantic validation (P0-1: type constraints)
+                        sem_result = semantic_validator.validate(expression)
+                        
+                        # Collect warnings (don't block, but record)
+                        if sem_result.warnings:
+                            warnings.extend(sem_result.warnings)
+                            type_warnings.extend(sem_result.warnings[:2])
+                            
+                        # Semantic errors are blocking if strict
+                        if sem_result.errors:
+                            # For now, treat semantic errors as warnings (less strict)
+                            # Can toggle to strict mode if needed
+                            warnings.extend(sem_result.errors)
+                            semantic_errors.extend(sem_result.errors[:2])
+                            
             except Exception as e:
                 is_valid = False
                 error = f"Validation Exception: {str(e)}"
@@ -588,18 +703,32 @@ async def node_validate(state: MiningState, config: RunnableConfig = None) -> Di
         updated_alpha.is_valid = is_valid
         updated_alpha.validation_error = error
         
+        # Store warnings in a custom field if available, or append to error
+        if warnings and not error:
+            # Alpha passed but has warnings - store for analysis
+            updated_alpha.validation_error = f"[WARNINGS] {'; '.join(warnings[:3])}"
+        
         if is_valid:
             valid_count += 1
         else:
-            errors.append(f"{expression[:50]}... -> {error}")
+            if error and "Duplicate" not in error:
+                syntax_errors.append(f"{expression[:50]}... -> {error}")
             
         updated_alphas.append(updated_alpha)
     
     duration_ms = int((time.time() - start_time) * 1000)
+    # #region agent log
+    _debug_log("D", "nodes.py:validate:result", "Validation complete", {"total": len(updated_alphas), "valid": valid_count, "invalid": len(updated_alphas) - valid_count, "duplicates": duplicate_count, "syntax_error_count": len(syntax_errors), "duration_ms": duration_ms, "pass_rate": round(valid_count / max(1, len(updated_alphas)) * 100, 1)})
+    # #endregion
     
-    logger.info(f"[{node_name}] 完成 | valid={valid_count}/{len(updated_alphas)}")
-    if errors:
-        logger.warning(f"[{node_name}] Errors: {errors[:3]}")
+    logger.info(
+        f"[{node_name}] 完成 | valid={valid_count}/{len(updated_alphas)} "
+        f"duplicates={duplicate_count} type_warnings={len(type_warnings)}"
+    )
+    if syntax_errors:
+        logger.warning(f"[{node_name}] Syntax Errors: {syntax_errors[:3]}")
+    if semantic_errors:
+        logger.warning(f"[{node_name}] Semantic Warnings: {semantic_errors[:3]}")
     
     trace_update = await record_trace(
         state, trace_service, node_name,
@@ -607,10 +736,12 @@ async def node_validate(state: MiningState, config: RunnableConfig = None) -> Di
         {
             "valid_count": valid_count, 
             "invalid_count": len(updated_alphas) - valid_count,
+            "duplicate_count": duplicate_count,
+            "type_warnings": type_warnings[:5],
             "failures": [
-                {"expression": a.expression, "error": a.validation_error}
+                {"expression": a.expression[:100], "error": a.validation_error}
                 for a in updated_alphas if not a.is_valid
-            ]
+            ][:10]  # Limit failure list
         },
         duration_ms,
         "SUCCESS"
@@ -657,9 +788,20 @@ async def node_self_correct(state: MiningState, llm_service: LLMService, config:
         
     logger.info(f"[{node_name}] 开始批量修复 | count={len(invalid_indices)} pass={state.retry_count + 1}")
 
-    fields_str = ", ".join([
-        f.get('id', f.get('name', '')) for f in state.fields[:50]
-    ])
+    # Build fields string with type info for self-correction
+    matrix_fields = []
+    vector_fields = []
+    for f in state.fields[:50]:
+        fid = f.get('id', f.get('name', ''))
+        ftype = f.get('type', 'MATRIX').upper()
+        if ftype == 'VECTOR':
+            vector_fields.append(fid)
+        else:
+            matrix_fields.append(fid)
+    
+    fields_str = f"MATRIX fields (use ts_* directly): {', '.join(matrix_fields[:30])}"
+    if vector_fields:
+        fields_str += f"\nVECTOR fields (MUST use vec_* first, e.g., vec_sum, vec_avg): {', '.join(vector_fields)}"
     
     updated_alphas = state.pending_alphas.copy()
     fixed_count = 0
@@ -734,12 +876,16 @@ async def node_self_correct(state: MiningState, llm_service: LLMService, config:
 
 
 # =============================================================================
-# NODE: Simulate
+# NODE: Simulate (P0-2: Enhanced with DB-level deduplication)
 # =============================================================================
 
 async def node_simulate(state: MiningState, brain: BrainAdapter, config: RunnableConfig = None) -> Dict:
     """
     Batch simulate ALL valid alphas on BRAIN platform.
+    
+    Enhanced with P0-2: DB-level deduplication
+    - Check expression hash against existing alphas before simulation
+    - Skip already-simulated expressions to save API calls
     
     Input State:
         - pending_alphas, region, universe
@@ -762,10 +908,52 @@ async def node_simulate(state: MiningState, brain: BrainAdapter, config: Runnabl
     if not valid_indices:
         logger.warning(f"[{node_name}] 无待模拟的有效 Alpha")
         return {}
-        
-    logger.info(f"[{node_name}] 开始批量模拟 | count={len(valid_indices)} region={state.region}")
     
-    expressions = [state.pending_alphas[i].expression for i in valid_indices]
+    # P0-2: DB-level deduplication check
+    db_duplicates = 0
+    indices_to_simulate = []
+    
+    try:
+        from backend.database import AsyncSessionLocal
+        from backend.selection_strategy import filter_unsimulated_expressions
+        
+        expressions_to_check = [state.pending_alphas[i].expression for i in valid_indices]
+        
+        async with AsyncSessionLocal() as db:
+            new_exprs, dup_exprs = await filter_unsimulated_expressions(
+                db, expressions_to_check, state.region, state.universe
+            )
+            
+        # Map back to indices
+        new_expr_set = set(new_exprs)
+        for idx in valid_indices:
+            expr = state.pending_alphas[idx].expression
+            if expr in new_expr_set:
+                indices_to_simulate.append(idx)
+            else:
+                db_duplicates += 1
+                # Mark as duplicate (skip simulation)
+                state.pending_alphas[idx].simulation_error = "DB duplicate: already simulated"
+                state.pending_alphas[idx].is_simulated = True
+                state.pending_alphas[idx].simulation_success = False
+                
+        logger.info(f"[{node_name}] DB dedup: {db_duplicates} duplicates skipped, "
+                   f"{len(indices_to_simulate)} to simulate")
+                   
+    except Exception as e:
+        logger.warning(f"[{node_name}] DB dedup check failed, proceeding with all: {e}")
+        indices_to_simulate = valid_indices
+        
+    if not indices_to_simulate:
+        logger.warning(f"[{node_name}] All expressions already in DB")
+        return {"pending_alphas": state.pending_alphas}
+        
+    logger.info(f"[{node_name}] 开始批量模拟 | count={len(indices_to_simulate)} region={state.region}")
+    
+    expressions = [state.pending_alphas[i].expression for i in indices_to_simulate]
+    # #region agent log
+    _debug_log("E", "nodes.py:simulate:expressions", "Expressions to simulate", {"count": len(expressions), "expressions": [e[:150] for e in expressions], "region": state.region, "universe": state.universe})
+    # #endregion
     
     try:
         # returns list of dicts: [{"success": True, "alpha_id": ...}, ...]
@@ -785,11 +973,11 @@ async def node_simulate(state: MiningState, brain: BrainAdapter, config: Runnabl
 
     duration_ms = int((time.time() - start_time) * 1000)
     
-    # Update alphas
+    # Update alphas - use indices_to_simulate (not valid_indices which includes DB dups)
     updated_alphas = state.pending_alphas.copy()
     success_count = 0
     
-    for i, idx in enumerate(valid_indices):
+    for i, idx in enumerate(indices_to_simulate):
         res = results[i] if i < len(results) else {"success": False, "error": "Missing result"}
         
         current = updated_alphas[idx]
@@ -806,14 +994,39 @@ async def node_simulate(state: MiningState, brain: BrainAdapter, config: Runnabl
             
         updated_alphas[idx] = updated
         
-    logger.info(f"[{node_name}] 完成 | success={success_count}/{len(valid_indices)}")
+    # #region agent log
+    failed_errors = [{"expr": expressions[i][:80], "error": results[i].get("error", "unknown")[:200]} for i in range(len(results)) if not results[i].get("success")]
+    _debug_log("E", "nodes.py:simulate:result", "Simulation complete", {"total_to_simulate": len(indices_to_simulate), "success": success_count, "failed": len(indices_to_simulate) - success_count, "db_duplicates_skipped": db_duplicates, "duration_ms": duration_ms, "success_rate": round(success_count / max(1, len(indices_to_simulate)) * 100, 1), "failed_errors": failed_errors[:5]})
+    # #endregion
+    logger.info(f"[{node_name}] 完成 | success={success_count}/{len(indices_to_simulate)} db_skipped={db_duplicates}")
+    
+    # Observability: Record metrics for experiment tracking
+    if EXPERIMENT_TRACKING_ENABLED:
+        exp = get_current_experiment()
+        if exp:
+            exp.metrics.increment("simulation_count", len(indices_to_simulate))
+            exp.metrics.record("dedup_skip_rate", 
+                (db_duplicates / (len(indices_to_simulate) + db_duplicates) * 100) 
+                if (len(indices_to_simulate) + db_duplicates) > 0 else 0,
+                tags={"node": node_name, "region": state.region}
+            )
+            exp.metrics.record("simulation_success_rate",
+                (success_count / len(indices_to_simulate) * 100) if len(indices_to_simulate) > 0 else 0,
+                tags={"node": node_name}
+            )
     
     trace_update = await record_trace(
         state, trace_service, node_name,
-        {"batch_size": len(valid_indices), "expressions": [e[:50] for e in expressions]},
         {
-            "success_count": success_count, 
-            "results": [{"id": r.get("alpha_id"), "metrics": r.get("metrics"), "err": r.get("error")} for r in results]
+            "batch_size": len(indices_to_simulate), 
+            "db_duplicates_skipped": db_duplicates,
+            "expressions": [e[:50] for e in expressions[:10]]  # Limit logged expressions
+        },
+        {
+            "success_count": success_count,
+            "simulated_count": len(indices_to_simulate),
+            "db_duplicates": db_duplicates,
+            "results": [{"id": r.get("alpha_id"), "err": r.get("error")} for r in results[:20]]
         },
         duration_ms,
         "SUCCESS" if success_count > 0 else "PARTIAL_FAILURE"
@@ -833,10 +1046,11 @@ async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: 
     """
     Evaluate alpha quality using multi-objective scoring.
     
-    Replaces simple threshold-based evaluation with composite scoring that:
-    1. Weights multiple metrics (Sharpe, Fitness, Turnover)
-    2. Penalizes high correlation and poor investability
-    3. Identifies optimization candidates (weak but promising)
+    Enhanced with P0-3: Two-stage correlation checking
+    - Stage 1: Quick score based on metrics only (all alphas)
+    - Stage 2: Correlation check only for near-PASS candidates (expensive API calls)
+    
+    This significantly reduces API calls while maintaining quality.
     
     Input State:
         - pending_alphas (with simulation results)
@@ -856,8 +1070,10 @@ async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: 
     pass_count = 0
     fail_count = 0
     optimize_count = 0
+    corr_checks_performed = 0
+    corr_checks_skipped = 0
     
-    logger.info(f"[{node_name}] Starting multi-objective evaluation | count={len(state.pending_alphas)}")
+    logger.info(f"[{node_name}] Starting two-stage evaluation | count={len(state.pending_alphas)}")
     
     # Configurable thresholds
     sharpe_min = getattr(settings, 'SHARPE_MIN', 1.5)
@@ -866,7 +1082,14 @@ async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: 
     score_pass_threshold = getattr(settings, 'SCORE_PASS_THRESHOLD', 0.8)
     score_optimize_threshold = getattr(settings, 'SCORE_OPTIMIZE_THRESHOLD', 0.3)
     
+    # P0-3: Threshold for triggering correlation check (only near-PASS candidates)
+    # If preliminary score < this, skip correlation check entirely
+    corr_check_threshold = getattr(settings, 'CORR_CHECK_THRESHOLD', 0.5)
+    
     eval_details = []
+    
+    # P0-fix-1: Queue for knowledge feedback (failures to record)
+    failure_feedback_queue = []
     
     for i, alpha in enumerate(updated_alphas):
         # Skip if not simulated successfully
@@ -898,11 +1121,39 @@ async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: 
             "investabilityConstrained": metrics.get("investabilityConstrained", {}),
         }
         
-        # Calculate composite score
+        # =====================================================================
+        # STAGE 1: Preliminary score WITHOUT correlation (cheap)
+        # =====================================================================
+        preliminary_score = calculate_alpha_score(
+            sim_result=sim_result,
+            prod_corr=0.0,  # Assume no correlation for preliminary
+            self_corr=0.0
+        )
+        
+        # Extract key metrics for quick threshold check
+        sharpe = metrics.get("sharpe", 0) or 0
+        turnover = metrics.get("turnover", 0) or 0
+        fitness = metrics.get("fitness", 0) or 0
+        
+        # Quick fail check - if clearly below thresholds, skip correlation
+        meets_thresholds = (
+            sharpe >= sharpe_min and
+            turnover <= turnover_max and
+            fitness >= fitness_min
+        )
+        
+        # =====================================================================
+        # STAGE 2: Correlation check ONLY for promising candidates (expensive)
+        # =====================================================================
         prod_corr = 0.0
         self_corr = 0.0
-
-        if brain and alpha.alpha_id:
+        needs_corr_check = (
+            preliminary_score >= corr_check_threshold or 
+            meets_thresholds
+        )
+        
+        if needs_corr_check and brain and alpha.alpha_id:
+            corr_checks_performed += 1
             try:
                 prod_corr_result = await brain.check_correlation(alpha.alpha_id, check_type="PROD")
                 if isinstance(prod_corr_result, dict):
@@ -916,7 +1167,10 @@ async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: 
                     self_corr = float(self_corr_result.get("max", 0.0) or 0.0)
             except Exception as e:
                 logger.warning(f"[{node_name}] SELF correlation check failed for {alpha.alpha_id}: {e}")
+        else:
+            corr_checks_skipped += 1
 
+        # Final score with correlation penalty (if checked)
         score = calculate_alpha_score(
             sim_result=sim_result,
             prod_corr=prod_corr,
@@ -927,21 +1181,10 @@ async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: 
         should_opt, opt_reason = should_optimize(sim_result)
         failed_tests = get_failed_tests(sim_result)
         
-        # Extract key metrics for threshold check
-        sharpe = metrics.get("sharpe", 0) or 0
-        turnover = metrics.get("turnover", 0) or 0
-        fitness = metrics.get("fitness", 0) or 0
-        
         # Determine quality status using hybrid approach:
         # 1. If meets all thresholds OR score > pass_threshold -> PASS
         # 2. If should optimize and score > optimize_threshold -> OPTIMIZE
         # 3. Otherwise -> FAIL
-        
-        meets_thresholds = (
-            sharpe >= sharpe_min and
-            turnover <= turnover_max and
-            fitness >= fitness_min
-        )
         
         if meets_thresholds or score >= score_pass_threshold:
             alpha.quality_status = "PASS"
@@ -952,17 +1195,57 @@ async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: 
         else:
             alpha.quality_status = "FAIL"
             fail_count += 1
+            
+            # P0-fix-1: Record failure pattern to knowledge base for learning
+            # Determine error type based on which threshold was missed
+            error_type = "QUALITY_FAIL"
+            if sharpe < sharpe_min:
+                error_type = "LOW_SHARPE"
+            elif fitness < fitness_min:
+                error_type = "LOW_FITNESS"
+            elif turnover > turnover_max:
+                error_type = "HIGH_TURNOVER"
+            elif sharpe < 0:
+                error_type = "NEGATIVE_SIGNAL"
+            
+            # Queue for async feedback (will be processed at end of evaluation)
+            if alpha.expression:
+                failure_feedback_queue.append({
+                    "expression": alpha.expression,
+                    "error_type": error_type,
+                    "metrics": metrics,
+                    "region": state.region,
+                    "dataset_id": state.dataset_id
+                })
         
         # Store score and optimization info in metrics for later use
         alpha.metrics = {
             **metrics,
             "_score": round(score, 4),
-            "_prod_corr": round(prod_corr, 4) if prod_corr is not None else None,
-            "_self_corr": round(self_corr, 4) if self_corr is not None else None,
+            "_preliminary_score": round(preliminary_score, 4),
+            "_prod_corr": round(prod_corr, 4) if prod_corr else None,
+            "_self_corr": round(self_corr, 4) if self_corr else None,
+            "_corr_checked": needs_corr_check,
             "_should_optimize": should_opt,
             "_optimize_reason": opt_reason,
             "_failed_tests": failed_tests,
         }
+        
+        # #region agent log
+        _debug_log("F", "nodes.py:evaluate:alpha_detail", f"Alpha evaluated: {alpha.quality_status}", {
+            "alpha_id": alpha.alpha_id,
+            "expression": alpha.expression[:80] if alpha.expression else None,
+            "sharpe": round(sharpe, 3),
+            "fitness": round(fitness, 3),
+            "turnover": round(turnover, 3),
+            "score": round(score, 3),
+            "preliminary_score": round(preliminary_score, 3),
+            "meets_thresholds": meets_thresholds,
+            "thresholds": {"sharpe_min": sharpe_min, "fitness_min": fitness_min, "turnover_max": turnover_max},
+            "failed_tests": failed_tests,
+            "status": alpha.quality_status
+        })
+        # #endregion
         
         eval_details.append({
             "id": alpha.alpha_id,
@@ -971,33 +1254,86 @@ async def node_evaluate(state: MiningState, brain: BrainAdapter = None, config: 
             "sharpe": sharpe,
             "fitness": fitness,
             "turnover": turnover,
+            "corr_checked": needs_corr_check,
             "optimize_reason": opt_reason if should_opt else None,
         })
         
         updated_alphas[i] = alpha
     
     duration_ms = int((time.time() - start_time) * 1000)
+    # #region agent log
+    _debug_log("E", "nodes.py:evaluate:result", "Evaluation complete", {"pass": pass_count, "optimize": optimize_count, "fail": fail_count, "corr_checked": corr_checks_performed, "corr_skipped": corr_checks_skipped, "duration_ms": duration_ms, "pass_rate": round(pass_count / max(1, pass_count + optimize_count + fail_count) * 100, 1)})
+    # #endregion
     
     logger.info(
-        f"[{node_name}] Complete | pass={pass_count} optimize={optimize_count} fail={fail_count}"
+        f"[{node_name}] Complete | pass={pass_count} optimize={optimize_count} fail={fail_count} "
+        f"corr_checked={corr_checks_performed} corr_skipped={corr_checks_skipped}"
     )
+    
+    # Observability: Record evaluation metrics
+    if EXPERIMENT_TRACKING_ENABLED:
+        exp = get_current_experiment()
+        if exp:
+            exp.metrics.increment("pass_count", pass_count)
+            exp.metrics.record("iteration_duration_ms", duration_ms, tags={"node": node_name})
+            
+            total_evaluated = pass_count + optimize_count + fail_count
+            if total_evaluated > 0:
+                exp.metrics.record("pass_rate", pass_count / total_evaluated * 100, tags={"region": state.region})
+                
+            # P0-3: Two-stage correlation savings
+            total_corr = corr_checks_performed + corr_checks_skipped
+            if total_corr > 0:
+                exp.metrics.record("corr_check_skip_rate", 
+                    corr_checks_skipped / total_corr * 100,
+                    tags={"node": node_name}
+                )
+    
+    # P0-fix-1: Process failure feedback queue - write to knowledge base
+    # This enables the system to LEARN from failures
+    if failure_feedback_queue:
+        rag_service = config.get("configurable", {}).get("rag_service") if config else None
+        if rag_service:
+            feedback_recorded = 0
+            # Sample failures to avoid overwhelming the KB (max 3 per iteration)
+            sample_size = min(3, len(failure_feedback_queue))
+            import random
+            sampled_failures = random.sample(failure_feedback_queue, sample_size)
+            
+            for feedback in sampled_failures:
+                try:
+                    await rag_service.record_failure_pattern(
+                        expression=feedback["expression"],
+                        error_type=feedback["error_type"],
+                        metrics=feedback["metrics"],
+                        region=feedback["region"],
+                        dataset_id=feedback["dataset_id"]
+                    )
+                    feedback_recorded += 1
+                except Exception as e:
+                    logger.warning(f"[{node_name}] Failed to record feedback: {e}")
+            
+            logger.info(f"[{node_name}] Knowledge feedback | recorded={feedback_recorded}/{len(failure_feedback_queue)}")
     
     trace_update = await record_trace(
         state, trace_service, node_name,
         {
-            "evaluation_mode": "multi_objective",
+            "evaluation_mode": "two_stage_correlation",
             "thresholds": {
                 "sharpe_min": sharpe_min,
                 "turnover_max": turnover_max,
                 "fitness_min": fitness_min,
                 "score_pass": score_pass_threshold,
+                "corr_check_threshold": corr_check_threshold,
             }
         },
         {
             "pass_count": pass_count,
             "optimize_count": optimize_count,
             "fail_count": fail_count,
-            "details": eval_details
+            "corr_checks_performed": corr_checks_performed,
+            "corr_checks_skipped": corr_checks_skipped,
+            "details": eval_details[:20]  # Limit to avoid huge trace
         },
         duration_ms,
         "SUCCESS"

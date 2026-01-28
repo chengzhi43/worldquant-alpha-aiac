@@ -52,25 +52,43 @@ class PromptContext:
 # =============================================================================
 
 def build_fields_context(fields: List[Dict], max_fields: int = 30) -> str:
-    """Build concise field reference, avoiding overwhelming the model."""
+    """Build concise field reference with type info, avoiding overwhelming the model."""
     if not fields:
         return "No fields available."
     
-    # Group by category for clarity
-    by_category: Dict[str, List[str]] = {}
+    # Separate MATRIX and VECTOR fields
+    matrix_fields = []
+    vector_fields = []
+    other_fields = []
+    
     for f in fields[:max_fields]:
-        cat = f.get("category", "Other")
-        if cat not in by_category:
-            by_category[cat] = []
         field_id = f.get("id", f.get("name", "unknown"))
-        by_category[cat].append(field_id)
+        field_type = f.get("type", "MATRIX").upper()
+        
+        if field_type == "VECTOR":
+            vector_fields.append(field_id)
+        elif field_type == "MATRIX":
+            matrix_fields.append(field_id)
+        else:
+            other_fields.append(field_id)
     
     lines = []
-    for cat, field_ids in sorted(by_category.items()):
-        sample = ", ".join(field_ids[:8])
-        if len(field_ids) > 8:
-            sample += f" ... (+{len(field_ids) - 8} more)"
-        lines.append(f"- {cat}: {sample}")
+    
+    if matrix_fields:
+        sample = ", ".join(matrix_fields[:10])
+        if len(matrix_fields) > 10:
+            sample += f" ... (+{len(matrix_fields) - 10} more)"
+        lines.append(f"- **MATRIX fields** (time-series, use ts_* operators directly): {sample}")
+    
+    if vector_fields:
+        sample = ", ".join(vector_fields[:10])
+        if len(vector_fields) > 10:
+            sample += f" ... (+{len(vector_fields) - 10} more)"
+        lines.append(f"- **VECTOR fields** (MUST use vec_* operators first!): {sample}")
+    
+    if other_fields:
+        sample = ", ".join(other_fields[:5])
+        lines.append(f"- Other: {sample}")
     
     return "\n".join(lines)
 
@@ -123,6 +141,14 @@ def build_strategy_constraints(ctx: PromptContext) -> str:
         constraints.append(
             f"Patterns that underperformed recently: {'; '.join(ctx.avoid_patterns[:3])}"
         )
+    
+    # CRITICAL TYPE CONSTRAINTS
+    constraints.append(
+        "**VECTOR FIELD RULE**: VECTOR-type fields MUST be processed with vec_* operators (vec_sum, vec_avg, vec_max, vec_min,vec_count,vec_range,vec_stddev, etc.) BEFORE using ts_* operators. Example: ts_rank(vec_sum(vector_field), 20) - NOT ts_rank(vector_field, 20)"
+    )
+    constraints.append(
+        "**MATRIX FIELD RULE**: MATRIX-type fields can use ts_* operators directly. Example: ts_rank(matrix_field, 20)"
+    )
     
     # Syntax constraints (always apply)
     constraints.extend([

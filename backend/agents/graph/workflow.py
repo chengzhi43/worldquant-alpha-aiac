@@ -116,8 +116,11 @@ class MiningWorkflow:
             partial(node_simulate, brain=self.brain)
         )
         
-        # Evaluation node (no external deps)
-        workflow.add_node("evaluate", node_evaluate)
+        # Evaluation node
+        workflow.add_node(
+            "evaluate",
+            partial(node_evaluate, brain=self.brain)
+        )
         
         # Save results node (handles both success and failure saving)
         workflow.add_node("save_results", node_save_results)
@@ -250,55 +253,85 @@ class MiningWorkflow:
         from backend.models import Alpha, AlphaFailure, TraceStep
         
         result = await self.run(task, dataset_id, fields, operators, num_alphas, config)
+
+        configurable = (config or {}).get("configurable", {})
+        run_id = configurable.get("run_id")
         
-        # Persist alphas
-        for alpha_result in result.get("generated_alphas", []):
-            alpha = Alpha(
-                task_id=task.id,
-                alpha_id=alpha_result.alpha_id,
-                expression=alpha_result.expression,
-                hypothesis=alpha_result.hypothesis,
-                logic_explanation=alpha_result.explanation,
-                region=task.region,
-                universe=task.universe,
-                dataset_id=dataset_id,
-                simulation_status="SUCCESS",
-                quality_status=alpha_result.quality_status,
-                metrics=alpha_result.metrics
-            )
-            self.db.add(alpha)
-        
-        # Persist failures
-        for failure in result.get("failures", []):
-            fail_record = AlphaFailure(
-                task_id=task.id,
-                expression=failure.expression,
-                error_type=failure.error_type,
-                error_message=failure.error_message
-            )
-            self.db.add(fail_record)
-        
-        # Persist trace steps (ONLY if TraceService was NOT used)
-        # If TraceService is in config, we assume it handled real-time persistence
-        has_realtime_trace = config and config.get("configurable", {}).get("trace_service")
-        
-        if not has_realtime_trace:
-            for trace in result.get("trace_steps", []):
-                step = TraceStep(
-                    task_id=task.id,
-                    step_type=trace.step_type,
-                    step_order=trace.step_order,
-                    input_data=trace.input_data,
-                    output_data=trace.output_data,
-                    duration_ms=trace.duration_ms,
-                    status=trace.status,
-                    error_message=trace.error_message
-                )
-                self.db.add(step)
-        
-        await self.db.commit()
-        
-        logger.info(f"[MiningWorkflow] 持久化完成 | task={task.id}")
+        try:
+            # Persist alphas
+            # P0-fix-2: Import hash function for deduplication
+            from backend.alpha_semantic_validator import compute_expression_hash
+            
+            for alpha_result in result.get("generated_alphas", []):
+                try:
+                    # P0-fix-2: Compute expression hash for DB-level deduplication
+                    expr_hash = compute_expression_hash(alpha_result.expression) if alpha_result.expression else None
+                    
+                    alpha = Alpha(
+                        task_id=task.id,
+                        run_id=run_id,
+                        alpha_id=alpha_result.alpha_id,
+                        expression=alpha_result.expression,
+                        expression_hash=expr_hash,  # P0-fix-2: Enable DB deduplication
+                        hypothesis=alpha_result.hypothesis,
+                        logic_explanation=alpha_result.explanation,
+                        region=task.region,
+                        universe=task.universe,
+                        dataset_id=dataset_id,
+                        quality_status=alpha_result.quality_status,
+                        metrics=alpha_result.metrics
+                    )
+                    self.db.add(alpha)
+                except Exception as e:
+                    logger.warning(f"[MiningWorkflow] Failed to add alpha: {e}")
+            
+            # Persist failures
+            for failure in result.get("failures", []):
+                try:
+                    fail_record = AlphaFailure(
+                        task_id=task.id,
+                        run_id=run_id,
+                        expression=failure.expression[:2000] if failure.expression else None,  # Limit length
+                        error_type=failure.error_type,
+                        error_message=failure.error_message[:500] if failure.error_message else None  # Limit length
+                    )
+                    self.db.add(fail_record)
+                except Exception as e:
+                    logger.warning(f"[MiningWorkflow] Failed to add failure record: {e}")
+            
+            # Persist trace steps (ONLY if TraceService was NOT used)
+            # If TraceService is in config, we assume it handled real-time persistence
+            has_realtime_trace = config and config.get("configurable", {}).get("trace_service")
+            
+            if not has_realtime_trace:
+                for trace in result.get("trace_steps", []):
+                    try:
+                        step = TraceStep(
+                            task_id=task.id,
+                            run_id=run_id,
+                            step_type=trace.step_type,
+                            step_order=trace.step_order,
+                            input_data=trace.input_data,
+                            output_data=trace.output_data,
+                            duration_ms=trace.duration_ms,
+                            status=trace.status,
+                            error_message=trace.error_message
+                        )
+                        self.db.add(step)
+                    except Exception as e:
+                        logger.warning(f"[MiningWorkflow] Failed to add trace step: {e}")
+            
+            await self.db.commit()
+            logger.info(f"[MiningWorkflow] 持久化完成 | task={task.id}")
+            
+        except Exception as e:
+            logger.error(f"[MiningWorkflow] Persistence failed: {e}")
+            # Rollback failed transaction to allow subsequent operations
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            # Don't raise - return result anyway so mining continues
         
         return result
 

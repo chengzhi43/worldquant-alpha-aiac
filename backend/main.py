@@ -11,7 +11,7 @@ from backend.config import settings
 from backend.database import init_db
 
 # Import all routers
-from backend.routers import dashboard, tasks, alphas, knowledge, config, datasets, operators
+from backend.routers import dashboard, tasks, alphas, knowledge, config, datasets, operators, runs
 
 
 @asynccontextmanager
@@ -19,6 +19,17 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     # Startup: Initialize database
     await init_db()
+    
+    # Load operator registry from database
+    try:
+        from backend.alpha_semantic_validator import load_operators_from_db
+        operators = await load_operators_from_db()
+        from loguru import logger
+        logger.info(f"[Startup] Operator registry loaded: {len(operators)} operators")
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"[Startup] Failed to load operators from DB: {e}")
+    
     yield
     # Shutdown: Cleanup if needed
     pass
@@ -45,6 +56,7 @@ app.add_middleware(
 app.include_router(dashboard.router, prefix=settings.API_V1_STR)
 app.include_router(tasks.router, prefix=settings.API_V1_STR)
 app.include_router(alphas.router, prefix=settings.API_V1_STR)
+app.include_router(runs.router, prefix=settings.API_V1_STR)
 app.include_router(knowledge.router, prefix=settings.API_V1_STR)
 app.include_router(config.router, prefix=settings.API_V1_STR)
 app.include_router(datasets.router, prefix=settings.API_V1_STR)

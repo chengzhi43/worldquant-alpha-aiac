@@ -25,6 +25,13 @@ async def get_db():
             await session.close()
 
 async def init_db():
+    """
+    Initialize database tables.
+    
+    For development: creates tables if they don't exist.
+    For production: use Alembic migrations instead:
+        cd backend && alembic upgrade head
+    """
     async with engine.begin() as conn:
-        # await conn.run_sync(SQLAlchemyBase.metadata.drop_all) # WARNING: Dev only
+        # await conn.run_sync(SQLAlchemyBase.metadata.drop_all)  # WARNING: Dev only
         await conn.run_sync(SQLAlchemyBase.metadata.create_all)

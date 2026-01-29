@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from pydantic import BaseModel
 
 from backend.database import get_db
 from backend.services.mining_service import MiningService, MiningTask, MiningStatus
+from backend.tasks import run_mining_task
 
 router = APIRouter(
     prefix="/mining",
@@ -72,13 +73,15 @@ async def create_task(
 
 @router.post("/tasks/{task_id}/start")
 async def start_task(
-    task_id: int, 
-    background_tasks: BackgroundTasks,
+    task_id: int,
     service: MiningService = Depends(get_mining_service)
 ):
     """Start a mining task (runs one iteration in background for now)."""
     # Verify task exists and update status
-    await service.start_task(task_id)
+    try:
+        await service.start_task(task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
     # Run the mining iteration in background
     # Note: In production, this should be a Celery task or similar.
@@ -89,19 +92,19 @@ async def start_task(
     # we just run it here if it's fast, OR we define a wrapper.
     # BETTER APPROACH: Pass a standalone runner function that creates its own session.
     
-    background_tasks.add_task(run_mining_background, task_id)
-    
-    return {"message": "Task started"}
+    celery_result = run_mining_task.delay(task_id)
+
+    return {"message": "Task started", "celery_task_id": celery_result.id}
 
 # --- Background Runner Helper ---
 # We need to import SessionLocal to create a new session
-from backend.database import AsyncSessionLocal
+# from backend.database import AsyncSessionLocal
 
-async def run_mining_background(task_id: int):
-    async with AsyncSessionLocal() as db:
-        service = MiningService(db)
-        # Run iterations until limit or stopped
-        # For now, just run ONE iteration as a proof of concept loop
-        # Check task status to see if we should continue
-        await service.run_mining_iteration(task_id)
-        # Logic to loop would go here, checking DB status each time
+# async def run_mining_background(task_id: int):
+#     async with AsyncSessionLocal() as db:
+#         service = MiningService(db)
+#         # Run iterations until limit or stopped
+#         # For now, just run ONE iteration as a proof of concept loop
+#         # Check task status to see if we should continue
+#         await service.run_mining_iteration(task_id)
+#         # Logic to loop would go here, checking DB status each time

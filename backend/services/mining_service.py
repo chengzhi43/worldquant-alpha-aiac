@@ -7,15 +7,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
 from backend.services.base import BaseService
-from backend.adapters.brain import brain_client
+from backend.adapters.brain_adapter import get_brain_adapter, BrainAdapter
+from backend.protocols import BrainProtocol
 from backend.agents.agent_hub import agent_hub
 from backend.models import MiningTask, MiningJob, Alpha, AlphaFailure, MiningStatus, JobStatus
 
 logger = logging.getLogger("mining_service")
 
 class MiningService(BaseService):
-    def __init__(self, db: AsyncSession):
+    """
+    Mining Service - Orchestrates alpha mining operations.
+    
+    Uses dependency injection for BrainProtocol to enable testing
+    with mock implementations.
+    """
+    
+    def __init__(self, db: AsyncSession, brain: BrainProtocol = None):
+        """
+        Initialize MiningService.
+        
+        Args:
+            db: Async database session
+            brain: Brain adapter implementing BrainProtocol (optional, will be fetched if not provided)
+        """
         super().__init__(db)
+        self._brain = brain
+    
+    async def _get_brain(self) -> BrainProtocol:
+        """Get or initialize the brain adapter."""
+        if self._brain is None:
+            self._brain = await get_brain_adapter()
+        return self._brain
         
     async def create_task(self, name: str, region: str, universe: str, 
                           hypothesis: str, dataset_ids: List[str], 
@@ -115,9 +137,20 @@ class MiningService(BaseService):
                 }
                 sim_configs.append(config)
             
-            # Execute Simulation (Blocking call in adapter, but quick loop)
-            # In production, this heavily needs async/await wrapper if adapter is sync
-            sim_results = brain_client.simulate_batch(sim_configs)
+            # Execute Simulation (async)
+            brain = await self._get_brain()
+            
+            # Extract expressions for batch simulation
+            expressions = [config["regular"] for config in sim_configs]
+            sim_results = await brain.simulate_batch(
+                expressions=expressions,
+                region=task.region,
+                universe=task.universe,
+                delay=1,
+                decay=0,
+                neutralization="INDUSTRY",
+                truncation=0.08,
+            )
             
             # 4. Process Results
             for i, res in enumerate(sim_results):

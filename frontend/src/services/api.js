@@ -103,6 +103,26 @@ const api = {
     return data
   },
 
+  getTaskRuns: async (taskId) => {
+    const { data } = await client.get(`/tasks/${taskId}/runs`)
+    return data
+  },
+
+  getRun: async (runId) => {
+    const { data } = await client.get(`/runs/${runId}`)
+    return data
+  },
+
+  getRunTrace: async (runId) => {
+    const { data } = await client.get(`/runs/${runId}/trace`)
+    return data
+  },
+
+  getRunAlphas: async (runId, params = {}) => {
+    const { data } = await client.get(`/runs/${runId}/alphas`, { params })
+    return data
+  },
+
   // Alphas
   getAlphas: async (params = {}) => {
     const { data } = await client.get('/alphas', { params })

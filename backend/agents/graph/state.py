@@ -37,6 +37,9 @@ class AlphaCandidate(BaseModel):
     
     # Evaluation state
     quality_status: str = "PENDING"  # PASS, FAIL, PENDING
+    
+    # Additional metadata for tracking
+    metadata: Dict = Field(default_factory=dict)
 
 
 class AlphaResult(BaseModel):

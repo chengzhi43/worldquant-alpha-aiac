@@ -1,5 +1,8 @@
 """
 BRAIN Adapter - WorldQuant BRAIN Platform API Integration
+
+Implements BrainProtocol for dependency injection and testability.
+
 Refactored based on ace_lib.py best practices:
 - Singleton Session (httpx.AsyncClient)
 - Active Token Expiry Checking
@@ -26,6 +29,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 from backend.config import settings
 from backend.database import AsyncSessionLocal
 from backend.models import BrainAuthToken
+
+# Import protocol for type checking (Protocol is runtime_checkable)
+from backend.protocols.brain_protocol import BrainProtocol
 
 # Singleton Client Storage (Loop-aware)
 _GLOBAL_CLIENT: Optional[httpx.AsyncClient] = None
@@ -556,6 +562,14 @@ class BrainAdapter:
         Fetch full details for a completed alpha.
         Reference: ace_lib.py `get_simulation_result_json` function.
         Uses retry-after header polling to ensure data is ready.
+        
+        Real API response structure (from BRAIN MCP):
+        - id, type, author, settings, regular{code, description, operatorCount}
+        - dateCreated, dateSubmitted, dateModified, name, favorite, hidden
+        - stage, status, grade, category, tags, classifications
+        - is{pnl, bookSize, longCount, shortCount, turnover, returns, drawdown, margin, sharpe, fitness, startDate, investabilityConstrained{}, riskNeutralized{}, checks[]}
+        - os, train, test (same structure as is)
+        - prod, competitions, themes, pyramids, pyramidThemes, team, osmosisPoints
         """
         if alpha_id is None:
             return {"success": False, "error": "No alpha ID provided"}
@@ -585,24 +599,99 @@ class BrainAdapter:
                 logger.error(f"Failed to parse alpha JSON: alpha_id={alpha_id}, headers={response.headers}, text={response.text}")
                 return {"success": False, "error": "Failed to parse alpha response"}
             
-            # Return full alpha data with structured metrics
+            # Extract stats from each period
+            is_stats = alpha.get("is") or {}
+            train_stats = alpha.get("train") or {}
+            test_stats = alpha.get("test") or {}
+            os_stats = alpha.get("os") or {}
+            
+            # Extract checks from IS stats (important for submission validation)
+            checks = is_stats.get("checks", [])
+            failed_checks = [c for c in checks if c.get("result") == "FAIL"]
+            pending_checks = [c for c in checks if c.get("result") == "PENDING"]
+            passed_checks = [c for c in checks if c.get("result") == "PASS"]
+            
+            # Extract expression from regular.code
+            regular = alpha.get("regular") or {}
+            expression = regular.get("code")
+
             return {
                 "success": True, 
                 "alpha_id": alpha.get("id"),
-                "expression": alpha.get("regular", {}).get("code") if alpha.get("regular") else None,
+                "expression": expression,
                 "settings": alpha.get("settings", {}),
+                "stage": alpha.get("stage"),  # IS or OS
+                "status": alpha.get("status"),  # UNSUBMITTED, SUBMITTED, etc.
+                "type": alpha.get("type"),  # REGULAR or SUPER
+                "dateCreated": alpha.get("dateCreated"),
+                "dateSubmitted": alpha.get("dateSubmitted"),
+                "classifications": alpha.get("classifications", []),
+                
+                # Metrics dictionary with all available stats
                 "metrics": {
-                    "sharpe": alpha.get("is", {}).get("sharpe"),
-                    "returns": alpha.get("is", {}).get("returns"),
-                    "turnover": alpha.get("is", {}).get("turnover"),
-                    "fitness": alpha.get("is", {}).get("fitness"),
-                    "max_dd": alpha.get("is", {}).get("drawdown")
+                    # Primary IS metrics (for scoring)
+                    "sharpe": is_stats.get("sharpe"),
+                    "returns": is_stats.get("returns"),
+                    "turnover": is_stats.get("turnover"),
+                    "fitness": is_stats.get("fitness"),
+                    "drawdown": is_stats.get("drawdown"),  # Renamed from max_dd
+                    "pnl": is_stats.get("pnl"),
+                    "margin": is_stats.get("margin"),
+                    "bookSize": is_stats.get("bookSize"),
+                    "longCount": is_stats.get("longCount"),
+                    "shortCount": is_stats.get("shortCount"),
+                    
+                    # Train/Test metrics
+                    "train_sharpe": train_stats.get("sharpe"),
+                    "train_fitness": train_stats.get("fitness"),
+                    "train_turnover": train_stats.get("turnover"),
+                    "train_returns": train_stats.get("returns"),
+                    "train_drawdown": train_stats.get("drawdown"),
+                    
+                    "test_sharpe": test_stats.get("sharpe"),
+                    "test_fitness": test_stats.get("fitness"),
+                    "test_turnover": test_stats.get("turnover"),
+                    "test_returns": test_stats.get("returns"),
+                    "test_drawdown": test_stats.get("drawdown"),
+                    
+                    # OS metrics (if available)
+                    "os_sharpe": os_stats.get("sharpe") if os_stats else None,
+                    "os_fitness": os_stats.get("fitness") if os_stats else None,
+                    
+                    # Investability and Risk Neutralized stats (nested dicts)
+                    "investabilityConstrained": is_stats.get("investabilityConstrained") or {},
+                    "riskNeutralized": is_stats.get("riskNeutralized") or {},
+                    
+                    # Train investability/risk stats
+                    "train_investabilityConstrained": train_stats.get("investabilityConstrained") or {},
+                    "train_riskNeutralized": train_stats.get("riskNeutralized") or {},
+                    
+                    # Test investability/risk stats  
+                    "test_investabilityConstrained": test_stats.get("investabilityConstrained") or {},
+                    "test_riskNeutralized": test_stats.get("riskNeutralized") or {},
                 },
-                "is": alpha.get("is", {}),
-                "os": alpha.get("os", {}),
-                "train": alpha.get("train"),
-                "test": alpha.get("test"),
-                "raw": alpha  # Include full raw response for debugging
+                
+                # Submission checks (critical for knowing if alpha can be submitted)
+                "checks": checks,
+                "failed_checks": [c.get("name") for c in failed_checks],
+                "pending_checks": [c.get("name") for c in pending_checks],
+                "passed_checks": [c.get("name") for c in passed_checks],
+                "can_submit": len(failed_checks) == 0 and len(pending_checks) == 0,
+                
+                # Full period data (for detailed analysis)
+                "is": is_stats,
+                "os": os_stats,
+                "train": train_stats,
+                "test": test_stats,
+                
+                # Additional metadata
+                "regular": regular,  # Contains code, description, operatorCount
+                "competitions": alpha.get("competitions"),
+                "themes": alpha.get("themes"),
+                "pyramids": alpha.get("pyramids"),
+                
+                # Include full raw response for debugging
+                "raw": alpha
             }
         except Exception as e:
             logger.error(f"Get alpha details error: {e}")
@@ -768,3 +857,60 @@ class BrainAdapter:
 
     def _get_common_operators(self) -> List[str]:
         return ["rank", "ts_rank", "ts_zscore", "ts_mean", "ts_delay", "ts_corr", "ts_max", "ts_min", "abs", "log", "sign"]
+
+
+# =============================================================================
+# Singleton Instance Management
+# =============================================================================
+
+_brain_adapter_instance: Optional[BrainAdapter] = None
+_brain_adapter_lock = asyncio.Lock()
+
+
+async def get_brain_adapter() -> BrainAdapter:
+    """
+    Get or create the singleton BrainAdapter instance.
+    
+    This provides a standard way to access the adapter throughout the application,
+    ensuring session reuse and proper authentication state management.
+    
+    Returns:
+        BrainAdapter instance implementing BrainProtocol
+    """
+    global _brain_adapter_instance
+    
+    if _brain_adapter_instance is None:
+        async with _brain_adapter_lock:
+            if _brain_adapter_instance is None:
+                _brain_adapter_instance = BrainAdapter()
+                await _brain_adapter_instance.ensure_session()
+    
+    return _brain_adapter_instance
+
+
+def get_brain_adapter_sync() -> BrainAdapter:
+    """
+    Get or create the singleton BrainAdapter instance (sync version).
+    
+    Warning: This does NOT ensure the session is valid.
+    Use get_brain_adapter() in async contexts when possible.
+    
+    Returns:
+        BrainAdapter instance
+    """
+    global _brain_adapter_instance
+    
+    if _brain_adapter_instance is None:
+        _brain_adapter_instance = BrainAdapter()
+    
+    return _brain_adapter_instance
+
+
+# Backward compatibility alias
+brain_adapter = get_brain_adapter_sync()
+
+
+def reset_brain_adapter():
+    """Reset the singleton instance. Useful for testing."""
+    global _brain_adapter_instance
+    _brain_adapter_instance = None

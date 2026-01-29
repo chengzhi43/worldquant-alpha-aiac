@@ -1,21 +1,223 @@
 """
-Feedback Agent - Analyzes failures and evolves the knowledge base
+Feedback Agent - Enhanced with Structured Analysis and Pattern Promotion
+
+Features:
+1. Structured failure analysis with root cause identification
+2. Success pattern automatic promotion and boosting
+3. Knowledge base quality scoring and pruning
+4. Evolutionary strategy recommendations
+
 Implements the CoSTEER (Collaborative Evolving Strategy) feedback loop
 """
 
 import json
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
-from collections import Counter
+from typing import List, Dict, Optional, Tuple, Any
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_, or_, update
 
 from backend.models import AlphaFailure, KnowledgeEntry, Alpha
 from backend.agents.prompts import FAILURE_ANALYSIS_SYSTEM, FAILURE_ANALYSIS_USER
 from backend.config import settings
+from backend.agents.services.llm_service import LLMService, get_llm_service
+from backend.protocols import LLMProtocol
 
-import openai
 from loguru import logger
+
+
+# =============================================================================
+# Structured Failure Analysis
+# =============================================================================
+
+@dataclass
+class FailureAnalysis:
+    """Structured analysis of alpha failures."""
+    # Root cause categories
+    category: str  # SYNTAX, SEMANTIC, LOW_SHARPE, HIGH_TURNOVER, OVERFITTING, etc.
+    severity: str  # high, medium, low
+    
+    # Details
+    error_pattern: str
+    root_cause: str
+    recommendation: str
+    
+    # Metrics if available
+    sharpe: float = 0.0
+    fitness: float = 0.0
+    turnover: float = 0.0
+    
+    # Context
+    dataset_id: str = ""
+    region: str = ""
+    operators_used: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "category": self.category,
+            "severity": self.severity,
+            "error_pattern": self.error_pattern,
+            "root_cause": self.root_cause,
+            "recommendation": self.recommendation,
+            "sharpe": self.sharpe,
+            "fitness": self.fitness,
+            "turnover": self.turnover,
+            "dataset_id": self.dataset_id,
+            "region": self.region,
+            "operators_used": self.operators_used,
+        }
+
+
+@dataclass 
+class PatternScore:
+    """Score for a knowledge base pattern."""
+    pattern_id: int
+    pattern: str
+    entry_type: str
+    
+    # Usage metrics
+    usage_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    
+    # Derived scores
+    success_rate: float = 0.0
+    recency_score: float = 0.0  # Based on last use
+    confidence_score: float = 0.0  # Based on sample size
+    overall_score: float = 0.0
+    
+    # Timestamps
+    created_at: datetime = None
+    last_used: datetime = None
+    
+    def calculate_scores(self):
+        """Calculate derived scores."""
+        total = self.success_count + self.failure_count
+        self.success_rate = self.success_count / total if total > 0 else 0.5
+        
+        # Confidence: higher with more samples
+        self.confidence_score = min(1.0, total / 10.0)
+        
+        # Recency: decay over time
+        if self.last_used:
+            days_since = (datetime.now() - self.last_used).days
+            self.recency_score = max(0, 1.0 - days_since / 60)  # 60-day decay
+        else:
+            self.recency_score = 0.5
+        
+        # Overall score
+        self.overall_score = (
+            0.50 * self.success_rate +
+            0.30 * self.confidence_score +
+            0.20 * self.recency_score
+        )
+
+
+# Failure category classification rules
+FAILURE_CATEGORIES = {
+    "SYNTAX_ERROR": {
+        "keywords": ["syntax", "parse", "invalid", "unexpected token"],
+        "severity": "high",
+        "recommendation": "Check expression syntax and operator usage"
+    },
+    "SEMANTIC_ERROR": {
+        "keywords": ["type error", "vector", "matrix", "incompatible"],
+        "severity": "high", 
+        "recommendation": "Verify field types (VECTOR vs MATRIX) and operator compatibility"
+    },
+    "FIELD_NOT_FOUND": {
+        "keywords": ["field not found", "unknown field", "does not exist"],
+        "severity": "high",
+        "recommendation": "Verify field exists in dataset for the specified region/universe"
+    },
+    "LOW_SHARPE": {
+        "keywords": ["low sharpe", "sharpe below", "insufficient sharpe"],
+        "severity": "medium",
+        "recommendation": "Add smoothing (ts_decay_linear), try different fields, or adjust windows"
+    },
+    "HIGH_TURNOVER": {
+        "keywords": ["turnover", "high turnover"],
+        "severity": "medium",
+        "recommendation": "Add decay, increase lookback windows, or use ts_rank instead of rank"
+    },
+    "LOW_FITNESS": {
+        "keywords": ["fitness", "low fitness"],
+        "severity": "medium",
+        "recommendation": "Try different neutralization or add risk controls"
+    },
+    "OVERFITTING": {
+        "keywords": ["overfit", "is/os gap", "oos"],
+        "severity": "medium",
+        "recommendation": "Simplify expression, add smoothing, or reduce complexity"
+    },
+    "HIGH_CORRELATION": {
+        "keywords": ["correlation", "similar alpha", "duplicate"],
+        "severity": "low",
+        "recommendation": "Try different operators or fields for more novelty"
+    },
+    "TIMEOUT": {
+        "keywords": ["timeout", "time out", "too slow"],
+        "severity": "medium",
+        "recommendation": "Simplify expression or reduce computational complexity"
+    },
+    "UNKNOWN": {
+        "keywords": [],
+        "severity": "medium",
+        "recommendation": "Review error message and expression carefully"
+    }
+}
+
+
+def classify_failure(error_type: str, error_message: str, metrics: Dict = None) -> FailureAnalysis:
+    """
+    Classify a failure into structured categories.
+    
+    Args:
+        error_type: Original error type string
+        error_message: Error message text
+        metrics: Optional metrics dict
+    
+    Returns:
+        FailureAnalysis with classification
+    """
+    error_lower = (error_type or "").lower() + " " + (error_message or "").lower()
+    
+    # Try to match category
+    matched_category = "UNKNOWN"
+    for cat, config in FAILURE_CATEGORIES.items():
+        for keyword in config["keywords"]:
+            if keyword in error_lower:
+                matched_category = cat
+                break
+        if matched_category != "UNKNOWN":
+            break
+    
+    # Check metrics for additional classification
+    if metrics:
+        sharpe = metrics.get("sharpe", 0)
+        turnover = metrics.get("turnover", 0)
+        fitness = metrics.get("fitness", 0)
+        
+        if sharpe < 0.3 and matched_category == "UNKNOWN":
+            matched_category = "LOW_SHARPE"
+        elif turnover > 0.7 and matched_category == "UNKNOWN":
+            matched_category = "HIGH_TURNOVER"
+        elif fitness < 0.5 and matched_category == "UNKNOWN":
+            matched_category = "LOW_FITNESS"
+    
+    config = FAILURE_CATEGORIES[matched_category]
+    
+    return FailureAnalysis(
+        category=matched_category,
+        severity=config["severity"],
+        error_pattern=error_type or "unknown",
+        root_cause=error_message[:200] if error_message else "No message",
+        recommendation=config["recommendation"],
+        sharpe=metrics.get("sharpe", 0) if metrics else 0,
+        fitness=metrics.get("fitness", 0) if metrics else 0,
+        turnover=metrics.get("turnover", 0) if metrics else 0,
+    )
 
 
 class FeedbackAgent:
@@ -24,15 +226,27 @@ class FeedbackAgent:
     1. Analyzing failure patterns
     2. Updating the knowledge base
     3. Generating prompt improvements
+    
+    Uses dependency injection for the LLM service to enable testing.
     """
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, llm_service: LLMProtocol = None):
+        """
+        Initialize FeedbackAgent.
+        
+        Args:
+            db: Async database session
+            llm_service: Optional LLM service (uses singleton if not provided)
+        """
         self.db = db
-        self.llm_client = openai.AsyncOpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL
-        )
-        self.model = getattr(settings, 'OPENAI_MODEL', 'deepseek-chat')
+        self._llm_service = llm_service
+    
+    @property
+    def llm_service(self) -> LLMService:
+        """Get LLM service (lazy initialization)."""
+        if self._llm_service is None:
+            self._llm_service = get_llm_service()
+        return self._llm_service
     
     async def run_daily_feedback(self) -> Dict:
         """
@@ -235,18 +449,20 @@ class FeedbackAgent:
                 sample_failures=json.dumps(sample_failures, indent=2, ensure_ascii=False)
             )
             
-            response = await self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": FAILURE_ANALYSIS_SYSTEM},
-                    {"role": "user", "content": prompt}
-                ],
+            response = await self.llm_service.call(
+                system_prompt=FAILURE_ANALYSIS_SYSTEM,
+                user_prompt=prompt,
                 temperature=0.5,
-                response_format={"type": "json_object"}
+                json_mode=True
             )
             
-            content = response.choices[0].message.content
-            return json.loads(self._clean_json(content))
+            if response.success and response.parsed:
+                return response.parsed
+            elif response.success:
+                return json.loads(self._clean_json(response.content))
+            else:
+                logger.error(f"LLM analysis failed: {response.error}")
+                return {"patterns": [], "prompt_improvements": []}
             
         except Exception as e:
             logger.error(f"LLM analysis failed: {e}")
@@ -271,6 +487,271 @@ class FeedbackAgent:
         if entry:
             entry.usage_count += 1
     
+    # =========================================================================
+    # Enhanced Pattern Promotion and Quality Management
+    # =========================================================================
+    
+    async def boost_success_pattern(
+        self,
+        pattern: str,
+        sharpe: float,
+        region: str = None,
+        dataset_id: str = None
+    ) -> bool:
+        """
+        Boost a success pattern's score and visibility.
+        
+        Called when a pattern leads to successful alpha.
+        """
+        try:
+            query = select(KnowledgeEntry).where(
+                KnowledgeEntry.pattern == pattern,
+                KnowledgeEntry.entry_type == 'SUCCESS_PATTERN',
+                KnowledgeEntry.is_active == True
+            )
+            result = await self.db.execute(query)
+            entry = result.scalar_one_or_none()
+            
+            if entry:
+                # Update success metrics
+                entry.usage_count = (entry.usage_count or 0) + 1
+                
+                meta = entry.meta_data or {}
+                meta['success_count'] = meta.get('success_count', 0) + 1
+                meta['last_success'] = datetime.now().isoformat()
+                
+                # Update running average Sharpe
+                n = meta.get('success_count', 1)
+                old_sharpe = meta.get('avg_sharpe', 0)
+                meta['avg_sharpe'] = (old_sharpe * (n - 1) + sharpe) / n
+                
+                # Boost score
+                current_score = meta.get('score', 0.5)
+                boost = min(0.1, sharpe / 20)  # Cap boost at 0.1
+                meta['score'] = min(1.0, current_score + boost)
+                
+                entry.meta_data = meta
+                await self.db.commit()
+                
+                logger.info(f"[Feedback] Boosted pattern score | pattern={pattern[:50]} new_score={meta['score']:.2f}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"[Feedback] Boost pattern failed: {e}")
+            return False
+    
+    async def penalize_failure_pattern(
+        self,
+        pattern: str,
+        error_type: str,
+        severity: str = "medium"
+    ) -> bool:
+        """
+        Penalize a pattern that led to failure.
+        
+        Multiple failures may lead to deactivation.
+        """
+        try:
+            query = select(KnowledgeEntry).where(
+                KnowledgeEntry.pattern == pattern,
+                KnowledgeEntry.is_active == True
+            )
+            result = await self.db.execute(query)
+            entry = result.scalar_one_or_none()
+            
+            if entry:
+                meta = entry.meta_data or {}
+                meta['failure_count'] = meta.get('failure_count', 0) + 1
+                meta['last_failure'] = datetime.now().isoformat()
+                meta['last_error_type'] = error_type
+                
+                # Reduce score
+                current_score = meta.get('score', 0.5)
+                penalty = 0.05 if severity == "low" else 0.1 if severity == "medium" else 0.15
+                meta['score'] = max(0.1, current_score - penalty)
+                
+                # Deactivate if too many failures
+                if meta.get('failure_count', 0) > 5 and meta.get('success_count', 0) < 2:
+                    entry.is_active = False
+                    logger.warning(f"[Feedback] Deactivated pattern due to repeated failures | pattern={pattern[:50]}")
+                
+                entry.meta_data = meta
+                await self.db.commit()
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"[Feedback] Penalize pattern failed: {e}")
+            return False
+    
+    async def prune_low_quality_patterns(
+        self,
+        min_score: float = 0.2,
+        max_age_days: int = 90,
+        min_usage: int = 0
+    ) -> int:
+        """
+        Prune low-quality patterns from knowledge base.
+        
+        Deactivates patterns that are:
+        - Below minimum score threshold
+        - Older than max age with no usage
+        - Have high failure rates
+        
+        Returns:
+            Number of patterns deactivated
+        """
+        cutoff_date = datetime.now() - timedelta(days=max_age_days)
+        deactivated = 0
+        
+        try:
+            # Get all active patterns
+            query = select(KnowledgeEntry).where(
+                KnowledgeEntry.is_active == True
+            )
+            result = await self.db.execute(query)
+            entries = result.scalars().all()
+            
+            for entry in entries:
+                should_deactivate = False
+                reason = ""
+                
+                meta = entry.meta_data or {}
+                score = meta.get('score', 0.5)
+                success_count = meta.get('success_count', 0)
+                failure_count = meta.get('failure_count', 0)
+                total = success_count + failure_count
+                
+                # Check score
+                if score < min_score and total > 3:
+                    should_deactivate = True
+                    reason = f"low_score ({score:.2f})"
+                
+                # Check age and usage
+                if entry.created_at and entry.created_at < cutoff_date:
+                    if entry.usage_count < min_usage:
+                        should_deactivate = True
+                        reason = f"old_unused (age>{max_age_days}d, usage={entry.usage_count})"
+                
+                # Check failure rate
+                if total > 5:
+                    success_rate = success_count / total
+                    if success_rate < 0.1:  # < 10% success
+                        should_deactivate = True
+                        reason = f"high_failure_rate ({success_rate:.1%})"
+                
+                if should_deactivate:
+                    entry.is_active = False
+                    deactivated += 1
+                    logger.debug(f"[Feedback] Pruned pattern | reason={reason} pattern={entry.pattern[:40]}")
+            
+            await self.db.commit()
+            
+            if deactivated > 0:
+                logger.info(f"[Feedback] Pruned {deactivated} low-quality patterns")
+            
+            return deactivated
+            
+        except Exception as e:
+            logger.error(f"[Feedback] Prune patterns failed: {e}")
+            return 0
+    
+    async def get_pattern_quality_report(self) -> Dict[str, Any]:
+        """
+        Generate a quality report for the knowledge base.
+        
+        Returns stats on pattern quality, usage, and recommendations.
+        """
+        try:
+            query = select(KnowledgeEntry).where(KnowledgeEntry.is_active == True)
+            result = await self.db.execute(query)
+            entries = result.scalars().all()
+            
+            # Categorize patterns
+            success_patterns = []
+            failure_patterns = []
+            
+            for entry in entries:
+                meta = entry.meta_data or {}
+                
+                ps = PatternScore(
+                    pattern_id=entry.id,
+                    pattern=entry.pattern,
+                    entry_type=entry.entry_type,
+                    usage_count=entry.usage_count or 0,
+                    success_count=meta.get('success_count', 0),
+                    failure_count=meta.get('failure_count', 0),
+                    created_at=entry.created_at,
+                )
+                ps.calculate_scores()
+                
+                if entry.entry_type == 'SUCCESS_PATTERN':
+                    success_patterns.append(ps)
+                elif entry.entry_type == 'FAILURE_PITFALL':
+                    failure_patterns.append(ps)
+            
+            # Sort by overall score
+            success_patterns.sort(key=lambda x: x.overall_score, reverse=True)
+            failure_patterns.sort(key=lambda x: x.usage_count, reverse=True)
+            
+            # Calculate stats
+            avg_success_score = sum(p.overall_score for p in success_patterns) / len(success_patterns) if success_patterns else 0
+            avg_success_rate = sum(p.success_rate for p in success_patterns) / len(success_patterns) if success_patterns else 0
+            
+            return {
+                "total_patterns": len(entries),
+                "success_patterns": len(success_patterns),
+                "failure_patterns": len(failure_patterns),
+                "avg_success_score": round(avg_success_score, 3),
+                "avg_success_rate": round(avg_success_rate, 3),
+                "top_success_patterns": [
+                    {"pattern": p.pattern[:60], "score": round(p.overall_score, 3)}
+                    for p in success_patterns[:10]
+                ],
+                "most_used_pitfalls": [
+                    {"pattern": p.pattern[:60], "usage": p.usage_count}
+                    for p in failure_patterns[:10]
+                ],
+            }
+            
+        except Exception as e:
+            logger.error(f"[Feedback] Quality report failed: {e}")
+            return {"error": str(e)}
+    
+    async def analyze_failure_structured(
+        self,
+        expression: str,
+        error_type: str,
+        error_message: str,
+        metrics: Dict = None,
+        dataset_id: str = None,
+        region: str = None
+    ) -> FailureAnalysis:
+        """
+        Perform structured failure analysis.
+        
+        Returns classified failure with recommendations.
+        """
+        analysis = classify_failure(error_type, error_message, metrics)
+        analysis.dataset_id = dataset_id or ""
+        analysis.region = region or ""
+        
+        # Extract operators from expression
+        import re
+        func_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(')
+        operators = [m.group(1).lower() for m in func_pattern.finditer(expression or "")]
+        analysis.operators_used = operators[:10]
+        
+        logger.debug(
+            f"[Feedback] Failure analysis | category={analysis.category} "
+            f"severity={analysis.severity} operators={operators[:5]}"
+        )
+        
+        return analysis
+    
     def _clean_json(self, content: str) -> str:
         """Clean JSON response from LLM."""
         content = content.strip()
@@ -288,7 +769,10 @@ class FeedbackAgent:
         failures: List[Dict],
         iteration: int,
         dataset_id: str,
-        region: str
+        region: str,
+        cumulative_success: int = 0,
+        target_goal: int = 4,
+        max_iterations: int = 10,
     ) -> Dict:
         """
         Learn from a complete mining round (Successes & Failures).
@@ -300,6 +784,9 @@ class FeedbackAgent:
             iteration: Current iteration index
             dataset_id: Context
             region: Context
+            cumulative_success: Total successful alphas so far
+            target_goal: Target number of alphas
+            max_iterations: Max iterations allowed
             
         Returns:
             Dict with learned stats
@@ -323,10 +810,22 @@ class FeedbackAgent:
             for f in failures[:5]
         ]) or "None"
         
+        # Build metrics summary
+        metrics_summary = f"- Pass: {len(successes)}, Fail: {len(failures)}, Total: {len(successes) + len(failures)}"
+        if successes:
+            avg_sharpe = sum(a.metrics.get('sharpe', 0) or 0 for a in successes) / len(successes)
+            metrics_summary += f"\n- Avg Sharpe: {avg_sharpe:.3f}"
+        
+        remaining_rounds = max_iterations - iteration
+        
         try:
             # Call LLM for analysis
             prompt = ROUND_ANALYSIS_USER.format(
                 iteration=iteration,
+                cumulative_success=cumulative_success,
+                target_goal=target_goal,
+                remaining_rounds=remaining_rounds,
+                metrics_summary=metrics_summary,
                 success_count=len(successes),
                 success_examples=success_examples,
                 failure_count=len(failures),
@@ -335,17 +834,20 @@ class FeedbackAgent:
                 region=region
             )
             
-            response = await self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": ROUND_ANALYSIS_SYSTEM},
-                    {"role": "user", "content": prompt}
-                ],
+            response = await self.llm_service.call(
+                system_prompt=ROUND_ANALYSIS_SYSTEM,
+                user_prompt=prompt,
                 temperature=0.7,
-                response_format={"type": "json_object"}
+                json_mode=True
             )
             
-            analysis = json.loads(self._clean_json(response.choices[0].message.content))
+            if response.success and response.parsed:
+                analysis = response.parsed
+            elif response.success:
+                analysis = json.loads(self._clean_json(response.content))
+            else:
+                logger.error(f"Round analysis LLM call failed: {response.error}")
+                return {"success": False, "error": response.error}
             
             # Store learned knowledge with enhanced structure
             new_entries = 0

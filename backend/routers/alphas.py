@@ -1,16 +1,17 @@
 """
 Alphas Router - Alpha Lab functionality with feedback support
+
+Uses AlphaService for all business logic.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 
 from backend.database import get_db
-from backend.models import Alpha, TraceStep
+from backend.services import AlphaService, AlphaListFilters
 from backend.tasks import sync_user_alphas
 
 router = APIRouter(
@@ -18,6 +19,15 @@ router = APIRouter(
     tags=["alphas"],
     responses={404: {"description": "Not found"}},
 )
+
+
+# =============================================================================
+# DEPENDENCY INJECTION
+# =============================================================================
+
+def get_alpha_service(db: AsyncSession = Depends(get_db)) -> AlphaService:
+    """Get AlphaService instance with injected dependencies."""
+    return AlphaService(db)
 
 
 # =============================================================================
@@ -63,17 +73,17 @@ class AlphaDetailResponse(BaseModel):
     operators_used: List[str] = []
     
     # Status
-    simulation_status: str
-    quality_status: str
-    diversity_status: str
-    human_feedback: str
+    status: str = "created"
+    quality_status: str = "PENDING"
+    human_feedback: str = "NONE"
     feedback_comment: Optional[str] = None
     
     # Metrics
     metrics: dict = {}
-    pnl_data: dict = {}
+    is_metrics: dict = {}
+    os_metrics: dict = {}
     
-    created_at: datetime
+    created_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
@@ -87,6 +97,11 @@ class FeedbackRequest(BaseModel):
 class SyncResponse(BaseModel):
     message: str
     task_id: str
+
+
+class AlphaListResponse(BaseModel):
+    items: List[AlphaListItem]
+    total: int
 
 
 # =============================================================================
@@ -105,9 +120,6 @@ async def sync_alphas(background_tasks: BackgroundTasks = None):
         task_id=str(task.id)
     )
 
-class AlphaListResponse(BaseModel):
-    items: List[AlphaListItem]
-    total: int
 
 @router.get("", response_model=AlphaListResponse)
 async def list_alphas(
@@ -119,70 +131,61 @@ async def list_alphas(
     sort_order: str = Query("desc", description="asc or desc"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db)
+    service: AlphaService = Depends(get_alpha_service),
 ):
     """
     List alphas with filtering and sorting.
     """
-    query = select(Alpha)
+    filters = AlphaListFilters(
+        region=region,
+        quality_status=quality_status,
+        human_feedback=human_feedback,
+        dataset_id=dataset_id,
+    )
     
-    # Apply filters
-    if region:
-        query = query.where(Alpha.region == region)
-    if quality_status:
-        query = query.where(Alpha.quality_status == quality_status)
-    if human_feedback:
-        query = query.where(Alpha.human_feedback == human_feedback)
-    if dataset_id:
-        query = query.where(Alpha.dataset_id == dataset_id)
-
-    # Get total count (before pagination)
-    count_query = select(func.count()).select_from(query.subquery())
-    total_result = await db.execute(count_query)
-    total = total_result.scalar_one()
+    items, total = await service.list_alphas(
+        filters=filters,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset,
+    )
     
-    # Apply sorting
-    sort_column = getattr(Alpha, sort_by, Alpha.date_created)
-    if sort_order.lower() == "desc":
-        query = query.order_by(sort_column.desc())
-    else:
-        query = query.order_by(sort_column.asc())
+    # Convert to response model
+    response_items = [
+        AlphaListItem(
+            id=item.id,
+            alpha_id=item.alpha_id,
+            type=item.type,
+            name=item.name,
+            expression=item.expression,
+            region=item.region,
+            dataset_id=item.dataset_id,
+            quality_status=item.quality_status,
+            human_feedback=item.human_feedback,
+            sharpe=item.sharpe,
+            returns=item.returns,
+            turnover=item.turnover,
+            drawdown=item.drawdown,
+            margin=item.margin,
+            fitness=item.fitness,
+            created_at=item.created_at,
+        )
+        for item in items
+    ]
     
-    query = query.limit(limit).offset(offset)
-    
-    result = await db.execute(query)
-    alphas = result.scalars().all()
-    
-    items = [AlphaListItem(
-        id=a.id,
-        alpha_id=a.alpha_id,
-        type=a.type,
-        name=a.name,
-        expression=(a.expression or "N/A")[:100] + "..." if len(a.expression or "N/A") > 100 else (a.expression or "N/A"),
-        region=a.region,
-        dataset_id=a.dataset_id,
-        quality_status=a.quality_status,
-        human_feedback=a.human_feedback,
-        sharpe=a.is_sharpe,
-        returns=a.is_returns,
-        turnover=a.is_turnover,
-        drawdown=a.is_drawdown,
-        margin=a.is_metrics.get("margin") if a.is_metrics else None,
-        fitness=a.is_fitness,
-        created_at=a.date_created
-    ) for a in alphas]
-
-    return AlphaListResponse(items=items, total=total)
+    return AlphaListResponse(items=response_items, total=total)
 
 
 @router.get("/{alpha_id}", response_model=AlphaDetailResponse)
-async def get_alpha(alpha_id: int, db: AsyncSession = Depends(get_db)):
+async def get_alpha(
+    alpha_id: int,
+    service: AlphaService = Depends(get_alpha_service),
+):
     """
-    Get detailed information about an alpha, including PnL data for charting.
+    Get detailed information about an alpha.
     """
-    query = select(Alpha).where(Alpha.id == alpha_id)
-    result = await db.execute(query)
-    alpha = result.scalar_one_or_none()
+    alpha = await service.get_alpha(alpha_id)
     
     if not alpha:
         raise HTTPException(status_code=404, detail="Alpha not found")
@@ -197,16 +200,16 @@ async def get_alpha(alpha_id: int, db: AsyncSession = Depends(get_db)):
         region=alpha.region,
         universe=alpha.universe,
         dataset_id=alpha.dataset_id,
-        fields_used=alpha.fields_used or [],
-        operators_used=alpha.operators_used or [],
-        simulation_status=alpha.simulation_status,
+        fields_used=alpha.fields_used,
+        operators_used=alpha.operators_used,
+        status=alpha.status,
         quality_status=alpha.quality_status,
-        diversity_status=alpha.diversity_status,
         human_feedback=alpha.human_feedback,
         feedback_comment=alpha.feedback_comment,
-        metrics=alpha.metrics or {},
-        pnl_data=alpha.pnl_data or {},
-        created_at=alpha.created_at
+        metrics=alpha.metrics,
+        is_metrics=alpha.is_metrics,
+        os_metrics=alpha.os_metrics,
+        created_at=alpha.created_at,
     )
 
 
@@ -214,102 +217,57 @@ async def get_alpha(alpha_id: int, db: AsyncSession = Depends(get_db)):
 async def submit_feedback(
     alpha_id: int,
     request: FeedbackRequest,
-    db: AsyncSession = Depends(get_db)
+    service: AlphaService = Depends(get_alpha_service),
 ):
     """
     Submit human feedback for an alpha (Human-in-the-Loop).
     This feedback is used by the Feedback Agent to improve future mining.
     """
-    query = select(Alpha).where(Alpha.id == alpha_id)
-    result = await db.execute(query)
-    alpha = result.scalar_one_or_none()
-    
-    if not alpha:
-        raise HTTPException(status_code=404, detail="Alpha not found")
-    
     if request.rating not in ["LIKED", "DISLIKED"]:
         raise HTTPException(status_code=400, detail="Rating must be LIKED or DISLIKED")
     
-    await db.execute(
-        update(Alpha)
-        .where(Alpha.id == alpha_id)
-        .values(
-            human_feedback=request.rating,
-            feedback_comment=request.comment
-        )
+    success = await service.submit_feedback(
+        alpha_id=alpha_id,
+        rating=request.rating,
+        comment=request.comment,
     )
-    await db.commit()
     
-    # TODO: Trigger Feedback Agent to learn from this feedback
-    # - If LIKED: Extract pattern and add to SUCCESS_PATTERN
-    # - If DISLIKED: Analyze reason and potentially add to FAILURE_PITFALL
+    if not success:
+        raise HTTPException(status_code=404, detail="Alpha not found")
     
     return {
         "message": "Feedback submitted",
         "alpha_id": alpha_id,
-        "rating": request.rating
+        "rating": request.rating,
     }
 
 
 @router.get("/{alpha_id}/trace", response_model=dict)
-async def get_alpha_trace(alpha_id: int, db: AsyncSession = Depends(get_db)):
+async def get_alpha_trace(
+    alpha_id: int,
+    service: AlphaService = Depends(get_alpha_service),
+):
     """
     Get the trace step that generated this alpha.
     Shows the full context: RAG query, hypothesis, code generation, etc.
     """
-    query = select(Alpha).where(Alpha.id == alpha_id)
-    result = await db.execute(query)
-    alpha = result.scalar_one_or_none()
+    trace = await service.get_alpha_trace(alpha_id)
     
-    if not alpha:
+    if trace is None:
         raise HTTPException(status_code=404, detail="Alpha not found")
     
-    if not alpha.trace_step_id:
-        return {"message": "No trace step linked to this alpha"}
-    
-    # Get the trace step
-    step_query = select(TraceStep).where(TraceStep.id == alpha.trace_step_id)
-    step_result = await db.execute(step_query)
-    step = step_result.scalar_one_or_none()
-    
-    if not step:
-        return {"message": "Trace step not found"}
-    
-    # Get all related trace steps for context (same task, up to this step)
-    context_query = select(TraceStep).where(
-        TraceStep.task_id == step.task_id,
-        TraceStep.step_order <= step.step_order
-    ).order_by(TraceStep.step_order)
-    
-    context_result = await db.execute(context_query)
-    context_steps = context_result.scalars().all()
-    
-    return {
-        "alpha_id": alpha_id,
-        "trace_step_id": step.id,
-        "task_id": step.task_id,
-        "context": [
-            {
-                "step_type": s.step_type,
-                "step_order": s.step_order,
-                "status": s.status,
-                "input": s.input_data,
-                "output": s.output_data,
-                "duration_ms": s.duration_ms
-            }
-            for s in context_steps
-        ]
-    }
+    return trace
 
 
 @router.get("/by-brain-id/{brain_alpha_id}", response_model=AlphaDetailResponse)
-async def get_alpha_by_brain_id(brain_alpha_id: str, db: AsyncSession = Depends(get_db)):
+async def get_alpha_by_brain_id(
+    brain_alpha_id: str,
+    service: AlphaService = Depends(get_alpha_service),
+):
     """
     Get an alpha by its BRAIN platform ID.
     """
-    query = select(Alpha).where(Alpha.alpha_id == brain_alpha_id)
-    result = await db.execute(query)
-    alpha = result.scalar_one_or_none()
+    alpha = await service.get_alpha_by_brain_id(brain_alpha_id)
     
     if not alpha:
         raise HTTPException(status_code=404, detail="Alpha not found")
@@ -324,14 +282,14 @@ async def get_alpha_by_brain_id(brain_alpha_id: str, db: AsyncSession = Depends(
         region=alpha.region,
         universe=alpha.universe,
         dataset_id=alpha.dataset_id,
-        fields_used=alpha.fields_used or [],
-        operators_used=alpha.operators_used or [],
-        simulation_status=alpha.simulation_status,
+        fields_used=alpha.fields_used,
+        operators_used=alpha.operators_used,
+        status=alpha.status,
         quality_status=alpha.quality_status,
-        diversity_status=alpha.diversity_status,
         human_feedback=alpha.human_feedback,
         feedback_comment=alpha.feedback_comment,
-        metrics=alpha.metrics or {},
-        pnl_data=alpha.pnl_data or {},
-        created_at=alpha.created_at
+        metrics=alpha.metrics,
+        is_metrics=alpha.is_metrics,
+        os_metrics=alpha.os_metrics,
+        created_at=alpha.created_at,
     )

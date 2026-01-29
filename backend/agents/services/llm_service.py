@@ -1,17 +1,21 @@
 """
 LLM Service - Unified LLM calling interface with logging and retries
-High cohesion: All LLM-related logic in one place
+
+Implements LLMProtocol for dependency injection and testability.
+High cohesion: All LLM-related logic in one place.
 """
 
+import asyncio
 import json
 import time
-from typing import Dict, List, Optional, Any, Type
+from typing import Dict, List, Optional, Any, Type, Tuple
 from pydantic import BaseModel
 import openai
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from loguru import logger
 
 from backend.config import settings
+from backend.protocols.llm_protocol import LLMProtocol, LLMResponse as LLMResponseProtocol
 
 
 class LLMResponse(BaseModel):
@@ -23,15 +27,33 @@ class LLMResponse(BaseModel):
     latency_ms: int = 0
     success: bool = True
     error: Optional[str] = None
+    
+    def to_protocol_response(self) -> LLMResponseProtocol:
+        """Convert to protocol response type."""
+        return LLMResponseProtocol(
+            content=self.content,
+            parsed=self.parsed,
+            model=self.model,
+            tokens_used=self.tokens_used,
+            latency_ms=self.latency_ms,
+            success=self.success,
+            error=self.error,
+        )
 
 
 class LLMService:
     """
-    Unified LLM Service with:
+    Unified LLM Service implementing LLMProtocol.
+    
+    Features:
     - Automatic retries with exponential backoff
     - JSON cleaning (markdown removal)
     - Token tracking
     - Structured logging
+    - Credential caching with invalidation support
+    
+    This class implements the LLMProtocol interface, allowing for
+    easy mocking in tests and dependency injection.
     """
     
     def __init__(
@@ -43,6 +65,9 @@ class LLMService:
         self.api_key = api_key or settings.OPENAI_API_KEY
         self.base_url = base_url or settings.OPENAI_BASE_URL
         self.model = model or getattr(settings, 'OPENAI_MODEL', 'deepseek-chat')
+
+        self._credentials_lock = asyncio.Lock()
+        self._credentials_loaded = False
         
         self.client = openai.AsyncOpenAI(
             api_key=self.api_key,
@@ -50,6 +75,40 @@ class LLMService:
         )
         
         logger.info(f"[LLMService] Initialized | model={self.model} base_url={self.base_url}")
+
+    async def _ensure_credentials_loaded(self):
+        if self._credentials_loaded:
+            return
+
+        async with self._credentials_lock:
+            if self._credentials_loaded:
+                return
+
+            try:
+                from backend.database import AsyncSessionLocal
+                from backend.services.credentials_service import CredentialsService, CredentialKey
+
+                async with AsyncSessionLocal() as db:
+                    service = CredentialsService(db)
+                    db_api_key = await service.get_credential(CredentialKey.OPENAI_API_KEY, fallback_env="OPENAI_API_KEY")
+                    db_base_url = await service.get_credential(CredentialKey.OPENAI_BASE_URL, fallback_env="OPENAI_BASE_URL")
+                    db_model = await service.get_credential(CredentialKey.OPENAI_MODEL, fallback_env="OPENAI_MODEL")
+
+                if db_api_key:
+                    self.api_key = db_api_key
+                if db_base_url:
+                    self.base_url = db_base_url
+                if db_model:
+                    self.model = db_model
+
+                self.client = openai.AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+            except Exception as e:
+                logger.warning(f"[LLMService] Failed to load DB credentials, using settings/env | error={e}")
+            finally:
+                self._credentials_loaded = True
+
+    def invalidate_credentials_cache(self):
+        self._credentials_loaded = False
     
     @retry(
         stop=stop_after_attempt(3),
@@ -83,6 +142,7 @@ class LLMService:
         logger.debug(f"[LLMService] Call started | id={call_id} json_mode={json_mode}")
         
         try:
+            await self._ensure_credentials_loaded()
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -94,7 +154,29 @@ class LLMService:
                 response_format={"type": "json_object"} if json_mode else None
             )
             
-            content = response.choices[0].message.content
+            # Defensive: handle empty/malformed responses
+            choices = getattr(response, "choices", None)
+            if not response or not choices:
+                status = getattr(response, "status", None)
+                msg = getattr(response, "msg", None)
+                extra = f" | status={status} msg={msg}" if status or msg else ""
+                raise ValueError(f"Empty response from LLM API{extra}")
+
+            if len(choices) == 0:
+                raise ValueError("Empty choices from LLM API")
+            
+            message = response.choices[0].message
+            if not message:
+                raise ValueError("No message in LLM response")
+                
+            content = message.content or ""
+            if json_mode and not content.strip():
+                finish_reason = getattr(response.choices[0], "finish_reason", None)
+                reasoning_content = getattr(message, "reasoning_content", None)
+                extra = f"finish_reason={finish_reason}" if finish_reason else ""
+                if reasoning_content:
+                    extra = (extra + " | reasoning_content_present=True").strip()
+                raise ValueError(f"Empty content in LLM response ({extra})")
             tokens_used = response.usage.total_tokens if response.usage else 0
             latency_ms = int((time.time() - start_time) * 1000)
             

@@ -1,26 +1,29 @@
 """
 Config Router - System configuration management
 
+Uses ConfigService for business logic and CredentialsService for credentials.
+
 Includes:
 - Quality thresholds
 - Operator preferences
 - Credentials management (Brain, LLM API)
 """
 
-import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
-from datetime import datetime
 
 from backend.database import get_db
-from backend.models import SystemConfig, OperatorPreference
+from backend.services.config_service import (
+    ConfigService,
+    ThresholdsConfig as ThresholdsConfigData,
+    DiversityConfig as DiversityConfigData,
+)
 from backend.services.credentials_service import (
-    CredentialsService, 
+    CredentialsService,
     CredentialKey,
-    get_credentials_service
+    get_credentials_service,
 )
 
 router = APIRouter(
@@ -28,6 +31,15 @@ router = APIRouter(
     tags=["config"],
     responses={404: {"description": "Not found"}},
 )
+
+
+# =============================================================================
+# DEPENDENCY INJECTION
+# =============================================================================
+
+def get_config_service(db: AsyncSession = Depends(get_db)) -> ConfigService:
+    """Get ConfigService instance with injected dependencies."""
+    return ConfigService(db)
 
 
 # =============================================================================
@@ -80,17 +92,21 @@ class CredentialStatusResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
+class OperatorPrefResponse(BaseModel):
+    operator_name: str
+    status: str
+    usage_count: int
+    success_count: int
+    failure_rate: float
+
+
 # =============================================================================
 # CREDENTIALS MANAGEMENT (Must be before /{key} route)
 # =============================================================================
 
 @router.get("/credentials")
 async def get_credentials_status(db: AsyncSession = Depends(get_db)):
-    """
-    Get status of all configured credentials (masked values).
-    
-    Returns configuration status without exposing actual values.
-    """
+    """Get status of all configured credentials (masked values)."""
     service = get_credentials_service(db)
     credentials = await service.get_all_credentials_masked()
     
@@ -105,11 +121,7 @@ async def set_brain_credentials(
     credentials: BrainCredentialsRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Set WorldQuant Brain platform credentials.
-    
-    Credentials are encrypted before storage.
-    """
+    """Set WorldQuant Brain platform credentials."""
     from backend.adapters.brain_adapter import BrainAdapter
     
     service = get_credentials_service(db)
@@ -126,7 +138,7 @@ async def set_brain_credentials(
             description="WorldQuant Brain platform password"
         )
         
-        # Invalidate cached credentials in BrainAdapter
+        # Invalidate cached credentials
         BrainAdapter.invalidate_credentials_cache()
         CredentialsService.invalidate_cache()
         
@@ -146,11 +158,7 @@ async def set_llm_credentials(
     credentials: LLMCredentialsRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Set LLM API credentials (OpenAI, DeepSeek, etc.).
-    
-    Credentials are encrypted before storage.
-    """
+    """Set LLM API credentials (OpenAI, DeepSeek, etc.)."""
     service = get_credentials_service(db)
     
     try:
@@ -172,6 +180,11 @@ async def set_llm_credentials(
         
         # Invalidate credential caches
         CredentialsService.invalidate_cache()
+        try:
+            from backend.agents.services.llm_service import get_llm_service
+            get_llm_service().invalidate_credentials_cache()
+        except Exception:
+            pass
         
         return {
             "success": True,
@@ -186,11 +199,7 @@ async def set_llm_credentials(
 
 @router.post("/credentials/brain/test")
 async def test_brain_credentials(db: AsyncSession = Depends(get_db)):
-    """
-    Test Brain platform credentials by attempting authentication.
-    
-    Does not return the actual credentials, only the test result.
-    """
+    """Test Brain platform credentials by attempting authentication."""
     service = get_credentials_service(db)
     result = await service.test_brain_credentials()
     
@@ -208,11 +217,7 @@ async def delete_credential(
     key: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Delete a specific credential.
-    
-    Valid keys: brain_email, brain_password, openai_api_key, openai_base_url, openai_model
-    """
+    """Delete a specific credential."""
     valid_keys = [
         CredentialKey.BRAIN_EMAIL,
         CredentialKey.BRAIN_PASSWORD,
@@ -244,95 +249,88 @@ async def delete_credential(
 # =============================================================================
 
 @router.get("/thresholds")
-async def get_thresholds(db: AsyncSession = Depends(get_db)):
+async def get_thresholds(
+    service: ConfigService = Depends(get_config_service),
+):
     """Get quality thresholds configuration."""
-    query = select(SystemConfig).where(SystemConfig.config_key == "quality_thresholds")
-    result = await db.execute(query)
-    config = result.scalar_one_or_none()
-    
-    if config and config.config_value:
-        try:
-            return json.loads(config.config_value)
-        except:
-            return ThresholdsConfig().model_dump()
-    
-    return ThresholdsConfig().model_dump()
+    config = await service.get_thresholds()
+    return {
+        "sharpe_min": config.sharpe_min,
+        "turnover_max": config.turnover_max,
+        "fitness_min": config.fitness_min,
+        "returns_min": config.returns_min,
+        "max_dd_max": config.max_dd_max,
+    }
 
 
 @router.put("/thresholds")
 async def update_thresholds(
     thresholds: ThresholdsConfig,
-    db: AsyncSession = Depends(get_db)
+    service: ConfigService = Depends(get_config_service),
 ):
     """Update quality thresholds."""
-    # Check if exists
-    query = select(SystemConfig).where(SystemConfig.config_key == "quality_thresholds")
-    result = await db.execute(query)
-    existing = result.scalar_one_or_none()
+    config = ThresholdsConfigData(
+        sharpe_min=thresholds.sharpe_min,
+        turnover_max=thresholds.turnover_max,
+        fitness_min=thresholds.fitness_min,
+        returns_min=thresholds.returns_min,
+        max_dd_max=thresholds.max_dd_max,
+    )
     
-    if existing:
-        existing.config_value = json.dumps(thresholds.model_dump())
-    else:
-        new_config = SystemConfig(
-            config_key="quality_thresholds",
-            config_value=json.dumps(thresholds.model_dump()),
-            config_type="json",
-            description="Alpha quality thresholds"
-        )
-        db.add(new_config)
+    updated = await service.update_thresholds(config)
     
-    await db.commit()
-    
-    return {"message": "Thresholds updated", "thresholds": thresholds.model_dump()}
+    return {
+        "message": "Thresholds updated",
+        "thresholds": {
+            "sharpe_min": updated.sharpe_min,
+            "turnover_max": updated.turnover_max,
+            "fitness_min": updated.fitness_min,
+            "returns_min": updated.returns_min,
+            "max_dd_max": updated.max_dd_max,
+        }
+    }
 
 
 @router.put("/diversity")
 async def update_diversity(
     diversity: DiversityConfig,
-    db: AsyncSession = Depends(get_db)
+    service: ConfigService = Depends(get_config_service),
 ):
     """Update diversity thresholds."""
-    # Check if exists
-    query = select(SystemConfig).where(SystemConfig.config_key == "diversity_thresholds")
-    result = await db.execute(query)
-    existing = result.scalar_one_or_none()
+    config = DiversityConfigData(
+        max_correlation=diversity.max_correlation,
+    )
     
-    if existing:
-        existing.config_value = json.dumps(diversity.model_dump())
-    else:
-        new_config = SystemConfig(
-            config_key="diversity_thresholds",
-            config_value=json.dumps(diversity.model_dump()),
-            config_type="json",
-            description="Alpha diversity thresholds"
-        )
-        db.add(new_config)
+    updated = await service.update_diversity_config(config)
     
-    await db.commit()
-    
-    return {"message": "Diversity config updated", "diversity": diversity.model_dump()}
+    return {
+        "message": "Diversity config updated",
+        "diversity": {
+            "max_correlation": updated.max_correlation,
+        }
+    }
 
 
 # =============================================================================
 # OPERATORS
 # =============================================================================
 
-@router.get("/operators")
-async def get_operator_prefs(db: AsyncSession = Depends(get_db)):
+@router.get("/operators", response_model=List[OperatorPrefResponse])
+async def get_operator_prefs(
+    service: ConfigService = Depends(get_config_service),
+):
     """Get all operator preferences."""
-    query = select(OperatorPreference).order_by(OperatorPreference.usage_count.desc())
-    result = await db.execute(query)
-    operators = result.scalars().all()
+    prefs = await service.get_operator_preferences()
     
     return [
-        {
-            "operator_name": op.operator_name,
-            "status": op.status,
-            "usage_count": op.usage_count,
-            "success_count": op.success_count,
-            "failure_rate": op.failure_rate
-        }
-        for op in operators
+        OperatorPrefResponse(
+            operator_name=p.operator_name,
+            status=p.status,
+            usage_count=p.usage_count,
+            success_count=p.success_count,
+            failure_rate=p.failure_rate,
+        )
+        for p in prefs
     ]
 
 
@@ -340,20 +338,14 @@ async def get_operator_prefs(db: AsyncSession = Depends(get_db)):
 async def update_operator_pref(
     operator_name: str,
     status: str,
-    db: AsyncSession = Depends(get_db)
+    service: ConfigService = Depends(get_config_service),
 ):
     """Update operator status (ACTIVE, BANNED, DEPRECATED)."""
-    if status not in ["ACTIVE", "BANNED", "DEPRECATED"]:
-        raise HTTPException(status_code=400, detail="Invalid status")
-    
-    await db.execute(
-        update(OperatorPreference)
-        .where(OperatorPreference.operator_name == operator_name)
-        .values(status=status)
-    )
-    await db.commit()
-    
-    return {"message": f"Operator {operator_name} set to {status}"}
+    try:
+        await service.update_operator_status(operator_name, status)
+        return {"message": f"Operator {operator_name} set to {status}"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =============================================================================
@@ -361,12 +353,8 @@ async def update_operator_pref(
 # =============================================================================
 
 @router.get("")
-async def get_all_config(db: AsyncSession = Depends(get_db)):
+async def get_all_config(
+    service: ConfigService = Depends(get_config_service),
+):
     """Get all system configuration (excluding credentials)."""
-    query = select(SystemConfig).where(
-        ~SystemConfig.config_key.like("credential:%")
-    )
-    result = await db.execute(query)
-    configs = result.scalars().all()
-    
-    return {c.config_key: c.config_value for c in configs}
+    return await service.get_all_config()

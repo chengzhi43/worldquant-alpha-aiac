@@ -51,10 +51,18 @@ class TraceService:
     - Step order management
     """
     
-    def __init__(self, db: AsyncSession, task_id: int, initial_step_order: int = 0, iteration: int = 1):
+    def __init__(
+        self,
+        db: AsyncSession,
+        task_id: int,
+        initial_step_order: int = 0,
+        iteration: int = 1,
+        run_id: int | None = None,
+    ):
         self.db = db
         self.task_id = task_id
         self.iteration = iteration
+        self.run_id = run_id
         self.current_step_order = initial_step_order
         self._pending_records: List[TraceStepRecord] = []
         
@@ -96,49 +104,15 @@ class TraceService:
         
         return record
     
-    async def persist_record(self, record: TraceStepRecord) -> TraceStep:
+    async def persist_record(self, record: TraceStepRecord) -> Optional[TraceStep]:
         """
         Persist a single trace record to database.
-        Returns the created TraceStep model.
+        Returns the created TraceStep model, or None if persistence failed.
         """
-        trace_step = TraceStep(
-            task_id=self.task_id,
-            step_type=record.step_type,
-            step_order=record.step_order,
-            iteration=self.iteration,
-            input_data=record.input_data,
-            output_data=record.output_data,
-            duration_ms=record.duration_ms,
-            status=record.status,
-
-            error_message=record.error_message
-        )
-        
-        logger.info(f"[[DEBUG_TRACE]] Persisting Record | type={record.step_type} iter={self.iteration}")
-        
-        self.db.add(trace_step)
-        await self.db.flush()
-        await self.db.commit() # Force commit for real-time visibility
-        
-        logger.debug(
-            f"[TraceService] Record persisted | "
-            f"id={trace_step.id} step={record.step_order} iter={self.iteration}"
-        )
-        
-        return trace_step
-    
-    async def flush_all(self) -> List[TraceStep]:
-        """
-        Persist all pending records to database.
-        Returns list of created TraceStep models.
-        """
-        if not self._pending_records:
-            return []
-        
-        trace_steps = []
-        for record in self._pending_records:
+        try:
             trace_step = TraceStep(
                 task_id=self.task_id,
+                run_id=self.run_id,
                 step_type=record.step_type,
                 step_order=record.step_order,
                 iteration=self.iteration,
@@ -148,17 +122,73 @@ class TraceService:
                 status=record.status,
                 error_message=record.error_message
             )
+            
+            logger.info(f"[[DEBUG_TRACE]] Persisting Record | type={record.step_type} iter={self.iteration}")
+            
             self.db.add(trace_step)
-            trace_steps.append(trace_step)
+            await self.db.flush()
+            await self.db.commit()  # Force commit for real-time visibility
+            
+            logger.debug(
+                f"[TraceService] Record persisted | "
+                f"id={trace_step.id} step={record.step_order} iter={self.iteration}"
+            )
+            
+            return trace_step
+            
+        except Exception as e:
+            logger.warning(f"[TraceService] Failed to persist record: {e}")
+            # Rollback to recover from failed transaction
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            return None
+    
+    async def flush_all(self) -> List[TraceStep]:
+        """
+        Persist all pending records to database.
+        Returns list of created TraceStep models.
+        """
+        if not self._pending_records:
+            return []
         
-        await self.db.flush()
-        
-        logger.info(
-            f"[TraceService] Flushed {len(trace_steps)} records | task={self.task_id}"
-        )
-        
-        self._pending_records.clear()
-        return trace_steps
+        try:
+            trace_steps = []
+            for record in self._pending_records:
+                trace_step = TraceStep(
+                    task_id=self.task_id,
+                    run_id=self.run_id,
+                    step_type=record.step_type,
+                    step_order=record.step_order,
+                    iteration=self.iteration,
+                    input_data=record.input_data,
+                    output_data=record.output_data,
+                    duration_ms=record.duration_ms,
+                    status=record.status,
+                    error_message=record.error_message
+                )
+                self.db.add(trace_step)
+                trace_steps.append(trace_step)
+            
+            await self.db.flush()
+            
+            logger.info(
+                f"[TraceService] Flushed {len(trace_steps)} records | task={self.task_id}"
+            )
+            
+            self._pending_records.clear()
+            return trace_steps
+            
+        except Exception as e:
+            logger.warning(f"[TraceService] Failed to flush records: {e}")
+            # Rollback to recover from failed transaction
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            self._pending_records.clear()
+            return []
     
     def get_pending_records(self) -> List[TraceStepRecord]:
         """Get list of pending (not yet persisted) records."""

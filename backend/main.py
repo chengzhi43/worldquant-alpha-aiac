@@ -23,10 +23,12 @@ async def lifespan(app: FastAPI):
     # Load operator registry from database
     try:
         from backend.alpha_semantic_validator import load_operators_from_db
-        await load_operators_from_db()
+        operators = await load_operators_from_db()
+        from loguru import logger
+        logger.info(f"[Startup] Operator registry loaded: {len(operators)} operators")
     except Exception as e:
-        import logging
-        logging.getLogger("main").warning(f"Failed to load operators from DB: {e}")
+        from loguru import logger
+        logger.error(f"[Startup] Failed to load operators from DB: {e}")
     
     yield
     # Shutdown: Cleanup if needed

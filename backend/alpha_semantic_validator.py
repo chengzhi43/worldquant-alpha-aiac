@@ -78,6 +78,7 @@ class OperatorRegistry:
         self._operators: Set[str] = set()
         self._operators_by_category: Dict[str, Set[str]] = {}
         self._loaded = False
+        self._warned = False  # Only warn once
         self._load_lock = asyncio.Lock()
     
     @classmethod
@@ -90,8 +91,9 @@ class OperatorRegistry:
     @property
     def operators(self) -> Set[str]:
         """Get all known operators."""
-        if not self._operators:
+        if not self._operators and not self._warned:
             logger.warning("[OperatorRegistry] No operators loaded. Run 'POST /api/v1/operators/sync' first.")
+            self._warned = True
         return self._operators
     
     @property
@@ -136,22 +138,30 @@ class OperatorRegistry:
     
     async def _load_operators(self, db) -> bool:
         """Internal load implementation."""
-        from sqlalchemy import select
+        from sqlalchemy import select, func
         from backend.models import Operator
         
+        # First check total count
+        count_result = await db.execute(select(func.count()).select_from(Operator))
+        total_count = count_result.scalar()
+        logger.debug(f"[OperatorRegistry] Total operators in DB: {total_count}")
+        
+        # Load all operators (don't filter by is_active, some may be NULL)
         result = await db.execute(
-            select(Operator.name, Operator.category).where(Operator.is_active == True)
+            select(Operator.name, Operator.category)
         )
         rows = result.all()
         
         if not rows:
-            logger.warning("[OperatorRegistry] No operators in database, using fallback")
+            logger.warning("[OperatorRegistry] No operators in database. Run 'POST /api/v1/operators/sync' first.")
             return False
         
         self._operators = set()
         self._operators_by_category = {}
         
         for name, category in rows:
+            if not name:
+                continue
             name_lower = name.lower()
             self._operators.add(name_lower)
             
@@ -161,12 +171,14 @@ class OperatorRegistry:
                 self._operators_by_category[category].add(name_lower)
         
         self._loaded = True
+        self._warned = False  # Reset warning flag after successful load
         logger.info(f"[OperatorRegistry] Loaded {len(self._operators)} operators from database")
         return True
     
     def reload(self):
         """Force reload on next access."""
         self._loaded = False
+        self._warned = False
         self._operators = set()
         self._operators_by_category = {}
 

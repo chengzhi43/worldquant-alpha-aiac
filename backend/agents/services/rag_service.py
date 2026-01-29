@@ -1,34 +1,82 @@
 """
-RAG Service - Knowledge base retrieval for mining patterns
+RAG Service - Enhanced Knowledge Base Retrieval for Mining Patterns
+
+Features:
+1. Dataset category-aware pattern retrieval
+2. Region-specific pattern filtering
+3. Intelligent fallback to generic patterns
+4. Success/failure pattern recording with proper categorization
+5. Pattern usage tracking and scoring
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+import re
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_, func, desc
+from sqlalchemy.dialects.postgresql import JSONB
 from loguru import logger
 
 from backend.models import KnowledgeEntry, DatasetMetadata
 
 
+# Dataset category mapping for intelligent pattern matching
+DATASET_CATEGORY_MAPPING = {
+    "pv": ["pv", "price", "volume", "trade", "ohlc", "vwap"],
+    "analyst": ["analyst", "anl", "estimate", "forecast", "recommendation", "eps", "target"],
+    "fundamental": ["fundamental", "fnd", "fin", "balance", "income", "cash", "ratio", "margin"],
+    "news": ["news", "sentiment", "headline", "article", "media", "social", "oth635"],
+    "other": ["other", "oth", "misc", "alternative"],
+}
+
+
+def infer_dataset_category(dataset_id: str) -> str:
+    """
+    Infer the category of a dataset from its ID.
+    
+    Args:
+        dataset_id: Dataset identifier (e.g., "analyst15", "pv6", "other635")
+    
+    Returns:
+        Category string (pv, analyst, fundamental, news, other)
+    """
+    if not dataset_id:
+        return "other"
+    
+    dataset_lower = dataset_id.lower()
+    
+    for category, keywords in DATASET_CATEGORY_MAPPING.items():
+        for keyword in keywords:
+            if keyword in dataset_lower:
+                return category
+    
+    return "other"
+
+
 class RAGResult:
-    """RAG query result container."""
+    """RAG query result container with enhanced metadata."""
     
     def __init__(
         self,
         patterns: List[Dict] = None,
         pitfalls: List[Dict] = None,
-        dataset_info: Optional[Dict] = None
+        dataset_info: Optional[Dict] = None,
+        category: str = "other",
+        region: str = None
     ):
         self.patterns = patterns or []
         self.pitfalls = pitfalls or []
         self.dataset_info = dataset_info
+        self.category = category
+        self.region = region
     
     def to_dict(self) -> Dict:
         return {
             "patterns": self.patterns,
             "pitfalls": self.pitfalls,
-            "dataset_info": self.dataset_info
+            "dataset_info": self.dataset_info,
+            "category": self.category,
+            "region": self.region
         }
     
     def get_few_shot_text(self) -> str:
@@ -36,31 +84,42 @@ class RAGResult:
         if not self.patterns:
             return "暂无成功模式参考"
         
-        return "\n".join([
-            f"- {p['pattern']}: {p.get('description', '')}"
-            for p in self.patterns
-        ])
+        lines = []
+        for p in self.patterns:
+            pattern = p.get('pattern', '')
+            desc = p.get('description', '')
+            sharpe = p.get('metadata', {}).get('expected_sharpe', '')
+            sharpe_str = f" [Expected Sharpe: {sharpe}]" if sharpe else ""
+            lines.append(f"- {pattern}: {desc}{sharpe_str}")
+        
+        return "\n".join(lines)
     
     def get_constraints_text(self) -> str:
         """Format pitfalls as negative constraints for prompts."""
         if not self.pitfalls:
             return "暂无特殊限制"
         
-        return "\n".join([
-            f"- 避免: {p['pattern']} (原因: {p.get('description', '')})"
-            for p in self.pitfalls
-        ])
+        lines = []
+        for p in self.pitfalls:
+            pattern = p.get('pattern', '')
+            desc = p.get('description', '')
+            err_type = p.get('error_type', '')
+            err_str = f" [{err_type}]" if err_type else ""
+            lines.append(f"- 避免: {pattern}{err_str} (原因: {desc})")
+        
+        return "\n".join(lines)
 
 
 class RAGService:
     """
-    Knowledge base retrieval service.
+    Enhanced Knowledge Base Retrieval Service.
     
     Features:
-    - Success pattern retrieval
-    - Failure pitfall retrieval  
-    - Dataset metadata lookup
-    - Relevance ranking
+    - Category-aware success pattern retrieval
+    - Region-specific pattern filtering
+    - Intelligent fallback to generic patterns
+    - Failure pitfall retrieval with severity ranking
+    - Pattern usage tracking
     """
     
     def __init__(self, db: AsyncSession):
@@ -76,6 +135,11 @@ class RAGService:
         """
         Query knowledge base for relevant patterns and pitfalls.
         
+        Enhanced with category-aware retrieval:
+        1. First try dataset-specific patterns
+        2. Then category-specific patterns  
+        3. Finally fall back to generic patterns
+        
         Args:
             dataset_id: Optional dataset to filter by
             region: Optional region to filter by
@@ -85,20 +149,25 @@ class RAGService:
         Returns:
             RAGResult with patterns, pitfalls, and dataset info
         """
+        # Infer category from dataset_id
+        category = infer_dataset_category(dataset_id) if dataset_id else "other"
+        
         logger.debug(
-            f"[RAGService] Query | dataset={dataset_id} region={region}"
+            f"[RAGService] Query | dataset={dataset_id} region={region} category={category}"
         )
         
-        # Get success patterns
-        patterns = await self._get_success_patterns(
+        # Get success patterns with category awareness
+        patterns = await self._get_success_patterns_enhanced(
             dataset_id=dataset_id,
+            category=category,
             region=region,
             limit=max_patterns
         )
         
         # Get failure pitfalls
-        pitfalls = await self._get_failure_pitfalls(
+        pitfalls = await self._get_failure_pitfalls_enhanced(
             dataset_id=dataset_id,
+            category=category,
             region=region,
             limit=max_pitfalls
         )
@@ -110,96 +179,220 @@ class RAGService:
         
         logger.info(
             f"[RAGService] Query complete | "
-            f"patterns={len(patterns)} pitfalls={len(pitfalls)}"
+            f"category={category} patterns={len(patterns)} pitfalls={len(pitfalls)}"
         )
         
         return RAGResult(
             patterns=patterns,
             pitfalls=pitfalls,
-            dataset_info=dataset_info
+            dataset_info=dataset_info,
+            category=category,
+            region=region
         )
     
+    async def _get_success_patterns_enhanced(
+        self,
+        dataset_id: str = None,
+        category: str = "other",
+        region: str = None,
+        limit: int = 5
+    ) -> List[Dict]:
+        """
+        Get success patterns with intelligent category matching.
+        
+        Priority order:
+        1. Exact dataset match
+        2. Category match
+        3. Region match
+        4. Generic patterns (sorted by usage/score)
+        """
+        patterns = []
+        
+        # Query all active success patterns
+        query = select(KnowledgeEntry).where(
+            KnowledgeEntry.entry_type == 'SUCCESS_PATTERN',
+            KnowledgeEntry.is_active == True
+        )
+        
+        result = await self.db.execute(query)
+        entries = result.scalars().all()
+        
+        # Score and sort patterns
+        scored_patterns = []
+        for entry in entries:
+            metadata = entry.meta_data or {}
+            
+            # Skip region config entries (they're metadata, not patterns)
+            if metadata.get('pattern_type') == 'region_config':
+                continue
+            
+            score = 0.0
+            
+            # 1. Dataset match (highest priority)
+            entry_dataset = metadata.get('dataset', metadata.get('dataset_id', ''))
+            if dataset_id and entry_dataset:
+                if entry_dataset.lower() == dataset_id.lower():
+                    score += 100.0
+            
+            # 2. Category match
+            entry_categories = metadata.get('dataset_categories', [])
+            entry_category = metadata.get('dataset_category', '')
+            
+            if category:
+                if category in entry_categories:
+                    score += 50.0
+                elif entry_category == category:
+                    score += 50.0
+                elif category in str(entry_category).lower():
+                    score += 30.0
+            
+            # 3. Region match
+            entry_regions = metadata.get('regions', [])
+            if region:
+                if region in entry_regions:
+                    score += 20.0
+                elif not entry_regions:  # Generic pattern
+                    score += 5.0
+            
+            # 4. Base score from metadata
+            base_score = metadata.get('score', 0.5)
+            expected_sharpe = metadata.get('expected_sharpe', 1.0)
+            score += base_score * 10.0
+            score += min(expected_sharpe, 2.0) * 5.0
+            
+            # 5. Usage count bonus (popular patterns)
+            score += min(entry.usage_count or 0, 10) * 0.5
+            
+            scored_patterns.append({
+                'entry': entry,
+                'metadata': metadata,
+                'score': score
+            })
+        
+        # Sort by score descending
+        scored_patterns.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Build result list
+        for sp in scored_patterns[:limit]:
+            entry = sp['entry']
+            metadata = sp['metadata']
+            patterns.append({
+                'pattern': entry.pattern,
+                'description': entry.description,
+                'usage_count': entry.usage_count,
+                'metadata': metadata,
+                'match_score': sp['score']
+            })
+        
+        # Log pattern sources for debugging
+        if patterns:
+            sources = [p.get('metadata', {}).get('source', 'unknown') for p in patterns]
+            logger.debug(f"[RAGService] Pattern sources: {sources}")
+        
+        return patterns
+    
+    async def _get_failure_pitfalls_enhanced(
+        self,
+        dataset_id: str = None,
+        category: str = "other",
+        region: str = None,
+        limit: int = 10
+    ) -> List[Dict]:
+        """
+        Get failure pitfalls with severity-based ranking.
+        
+        Priority:
+        1. High severity errors first
+        2. Category-relevant pitfalls
+        3. Recent pitfalls
+        """
+        query = select(KnowledgeEntry).where(
+            KnowledgeEntry.entry_type == 'FAILURE_PITFALL',
+            KnowledgeEntry.is_active == True
+        )
+        
+        result = await self.db.execute(query)
+        entries = result.scalars().all()
+        
+        # Score pitfalls
+        scored_pitfalls = []
+        severity_weights = {'high': 30, 'medium': 20, 'low': 10}
+        
+        for entry in entries:
+            metadata = entry.meta_data or {}
+            score = 0.0
+            
+            # Severity weight
+            severity = metadata.get('severity', 'medium')
+            score += severity_weights.get(severity, 15)
+            
+            # Category relevance
+            pitfall_category = metadata.get('dataset_category', '')
+            if category and pitfall_category:
+                if category == pitfall_category:
+                    score += 20.0
+            
+            # Error type relevance
+            error_type = metadata.get('error_type', '')
+            # Prioritize type errors and syntax errors
+            if error_type in ['TYPE_ERROR', 'SYNTAX_ERROR', 'SEMANTIC_ERROR']:
+                score += 15.0
+            
+            scored_pitfalls.append({
+                'entry': entry,
+                'metadata': metadata,
+                'score': score
+            })
+        
+        # Sort by score
+        scored_pitfalls.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Build result
+        pitfalls = []
+        for sp in scored_pitfalls[:limit]:
+            entry = sp['entry']
+            metadata = sp['metadata']
+            pitfalls.append({
+                'pattern': entry.pattern,
+                'description': entry.description,
+                'error_type': metadata.get('error_type'),
+                'severity': metadata.get('severity'),
+                'metadata': metadata
+            })
+        
+        return pitfalls
+    
+    # Legacy method for backward compatibility
     async def _get_success_patterns(
         self,
         dataset_id: str = None,
         region: str = None,
         limit: int = 5
     ) -> List[Dict]:
-        """Get top success patterns by usage count, prioritizing dataset-specific ones."""
-        query = select(KnowledgeEntry).where(
-            KnowledgeEntry.entry_type == 'SUCCESS_PATTERN',
-            KnowledgeEntry.is_active == True
-        ).order_by(KnowledgeEntry.usage_count.desc()).limit(limit * 3)  # Get more for filtering
-        
-        result = await self.db.execute(query)
-        entries = result.scalars().all()
-        
-        # Separate into dataset-specific and generic patterns
-        dataset_specific = []
-        generic_patterns = []
-        
-        for entry in entries:
-            metadata = entry.meta_data or {}
-            pattern_dataset = metadata.get('dataset')
-            pattern_region = metadata.get('region')
-            
-            # Skip if region doesn't match (when specified)
-            if region and pattern_region and pattern_region != region:
-                continue
-            
-            pattern_info = {
-                'pattern': entry.pattern,
-                'description': entry.description,
-                'usage_count': entry.usage_count,
-                'metadata': metadata
-            }
-            
-            # Categorize by dataset relevance
-            if dataset_id and pattern_dataset == dataset_id:
-                dataset_specific.append(pattern_info)
-            elif not pattern_dataset:
-                # Only include generic patterns if they're truly generic (no dataset specified)
-                # Don't include patterns from other datasets
-                generic_patterns.append(pattern_info)
-        
-        # Prioritize dataset-specific patterns, fill with generic if needed
-        patterns = dataset_specific[:limit]
-        if len(patterns) < limit:
-            patterns.extend(generic_patterns[:limit - len(patterns)])
-        
-        return patterns[:limit]
+        """Legacy method - redirects to enhanced version."""
+        category = infer_dataset_category(dataset_id) if dataset_id else "other"
+        return await self._get_success_patterns_enhanced(
+            dataset_id=dataset_id,
+            category=category,
+            region=region,
+            limit=limit
+        )
     
+    # Legacy method for backward compatibility
     async def _get_failure_pitfalls(
         self,
         dataset_id: str = None,
         region: str = None,
         limit: int = 10
     ) -> List[Dict]:
-        """Get relevant failure pitfalls."""
-        query = select(KnowledgeEntry).where(
-            KnowledgeEntry.entry_type == 'FAILURE_PITFALL',
-            KnowledgeEntry.is_active == True
-        ).order_by(KnowledgeEntry.created_at.desc()).limit(limit * 2)  # Get more for filtering
-        
-        result = await self.db.execute(query)
-        entries = result.scalars().all()
-        
-        pitfalls = []
-        for entry in entries:
-            metadata = entry.meta_data or {}
-            
-            # Filter by region if specified
-            if region and metadata.get('region') and metadata['region'] != region:
-                continue
-            
-            pitfalls.append({
-                'pattern': entry.pattern,
-                'description': entry.description,
-                'error_type': metadata.get('error_type'),
-                'failure_rate': metadata.get('failure_rate')
-            })
-        
-        return pitfalls[:limit]
+        """Legacy method - redirects to enhanced version."""
+        category = infer_dataset_category(dataset_id) if dataset_id else "other"
+        return await self._get_failure_pitfalls_enhanced(
+            dataset_id=dataset_id,
+            category=category,
+            region=region,
+            limit=limit
+        )
     
     async def get_field_blacklist(self, region: str = None) -> List[str]:
         """Get list of blacklisted fields."""
@@ -285,6 +478,9 @@ class RAGService:
             skeleton = expression_to_skeleton(expression)
             op_chain = extract_operator_chain(expression)
             
+            # Infer category from dataset_id
+            category = infer_dataset_category(dataset_id) if dataset_id else "other"
+            
             # Check if similar pattern already exists
             existing = await self._find_similar_pitfall(skeleton, region)
             
@@ -300,6 +496,15 @@ class RAGService:
                 # Create new pitfall entry
                 description = self._generate_pitfall_description(error_type, metrics, op_chain)
                 
+                # Determine severity based on error type
+                severity = 'medium'
+                if error_type in ['TYPE_ERROR', 'SYNTAX_ERROR', 'SEMANTIC_ERROR']:
+                    severity = 'high'
+                elif error_type in ['LOW_SHARPE', 'HIGH_TURNOVER']:
+                    severity = 'medium'
+                elif error_type == 'NEGATIVE_SIGNAL':
+                    severity = 'low'  # Can be fixed by sign flip
+                
                 new_entry = KnowledgeEntry(
                     pattern=skeleton,
                     description=description,
@@ -307,19 +512,23 @@ class RAGService:
                     is_active=True,
                     usage_count=0,
                     meta_data={
+                        'source': 'feedback_loop',
                         'region': region,
                         'dataset': dataset_id,
+                        'dataset_category': category,
                         'error_type': error_type,
+                        'severity': severity,
                         'operator_chain': op_chain[:5] if op_chain else [],
                         'example_expression': expression[:200],
                         'failure_count': 1,
                         'sharpe': metrics.get('sharpe', 0) if metrics else 0,
                         'fitness': metrics.get('fitness', 0) if metrics else 0,
+                        'turnover': metrics.get('turnover', 0) if metrics else 0,
                         'created_at': datetime.now().isoformat()
                     }
                 )
                 self.db.add(new_entry)
-                logger.info(f"[RAGService] Created new pitfall | skeleton={skeleton[:50]} error={error_type}")
+                logger.info(f"[RAGService] Created new pitfall | skeleton={skeleton[:50]} error={error_type} category={category}")
             
             await self.db.commit()
             return True
@@ -348,6 +557,9 @@ class RAGService:
             skeleton = expression_to_skeleton(expression)
             op_chain = extract_operator_chain(expression)
             
+            # Infer category from dataset_id
+            category = infer_dataset_category(dataset_id) if dataset_id else "other"
+            
             # Check if similar pattern exists
             existing = await self._find_similar_success(skeleton, region)
             
@@ -363,8 +575,15 @@ class RAGService:
                 existing.meta_data['avg_sharpe'] = (old_sharpe * (n-1) + metrics.get('sharpe', 0)) / n
                 logger.info(f"[RAGService] Updated success pattern | skeleton={skeleton[:50]}")
             else:
-                # Create new success pattern
-                description = f"Sharpe: {metrics.get('sharpe', 0):.2f}, Fitness: {metrics.get('fitness', 0):.2f}"
+                # Create new success pattern with full category info
+                sharpe = metrics.get('sharpe', 0)
+                fitness = metrics.get('fitness', 0)
+                turnover = metrics.get('turnover', 0)
+                
+                description = f"Sharpe: {sharpe:.2f}, Fitness: {fitness:.2f}, Turnover: {turnover:.2f}"
+                
+                # Calculate a quality score
+                score = min(1.0, (sharpe / 2.0) * 0.6 + (fitness / 1.5) * 0.3 + max(0, (0.7 - turnover)) * 0.1)
                 
                 new_entry = KnowledgeEntry(
                     pattern=skeleton,
@@ -373,19 +592,26 @@ class RAGService:
                     is_active=True,
                     usage_count=1,
                     meta_data={
+                        'source': 'feedback_loop',
                         'region': region,
+                        'regions': [region] if region else [],
                         'dataset': dataset_id,
+                        'dataset_category': category,
+                        'dataset_categories': [category],
                         'operator_chain': op_chain[:5] if op_chain else [],
                         'example_expression': expression[:200],
                         'alpha_id': alpha_id,
                         'success_count': 1,
-                        'avg_sharpe': metrics.get('sharpe', 0),
-                        'avg_fitness': metrics.get('fitness', 0),
+                        'avg_sharpe': sharpe,
+                        'avg_fitness': fitness,
+                        'avg_turnover': turnover,
+                        'expected_sharpe': sharpe,
+                        'score': score,
                         'created_at': datetime.now().isoformat()
                     }
                 )
                 self.db.add(new_entry)
-                logger.info(f"[RAGService] Created new success pattern | skeleton={skeleton[:50]}")
+                logger.info(f"[RAGService] Created new success pattern | skeleton={skeleton[:50]} sharpe={sharpe:.2f} category={category}")
             
             await self.db.commit()
             return True
@@ -443,3 +669,66 @@ class RAGService:
             parts.append(f"算子链: {' → '.join(op_chain[:3])}")
         
         return "; ".join(parts)
+    
+    async def get_region_config(self, region: str) -> Optional[Dict]:
+        """
+        Get recommended configuration for a region from knowledge base.
+        
+        Args:
+            region: Region code (USA, KOR, ASI, etc.)
+        
+        Returns:
+            Dict with recommended settings or None if not found
+        """
+        query = select(KnowledgeEntry).where(
+            KnowledgeEntry.entry_type == 'SUCCESS_PATTERN',
+            KnowledgeEntry.pattern == f"REGION_CONFIG:{region.upper()}",
+            KnowledgeEntry.is_active == True
+        )
+        
+        result = await self.db.execute(query)
+        entry = result.scalar_one_or_none()
+        
+        if entry and entry.meta_data:
+            return {
+                'region': region.upper(),
+                'recommended_universe': entry.meta_data.get('recommended_universe'),
+                'recommended_decay': entry.meta_data.get('recommended_decay'),
+                'recommended_neutralization': entry.meta_data.get('recommended_neutralization'),
+                'sharpe_adjustment': entry.meta_data.get('sharpe_adjustment', 1.0),
+                'notes': entry.description
+            }
+        
+        # Fallback to default USA settings if not found
+        return {
+            'region': region.upper(),
+            'recommended_universe': 'TOP3000',
+            'recommended_decay': 4,
+            'recommended_neutralization': 'SUBINDUSTRY',
+            'sharpe_adjustment': 1.0,
+            'notes': 'Default settings'
+        }
+    
+    async def get_patterns_by_category(
+        self,
+        category: str,
+        region: str = None,
+        limit: int = 10
+    ) -> List[Dict]:
+        """
+        Get success patterns for a specific dataset category.
+        
+        Args:
+            category: Dataset category (pv, analyst, fundamental, news, other)
+            region: Optional region filter
+            limit: Maximum patterns to return
+        
+        Returns:
+            List of pattern dictionaries
+        """
+        return await self._get_success_patterns_enhanced(
+            dataset_id=None,
+            category=category,
+            region=region,
+            limit=limit
+        )

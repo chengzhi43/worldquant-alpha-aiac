@@ -1,13 +1,17 @@
+"""
+Runs Router - Experiment run management
+
+Uses RunService for all business logic.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 
 from backend.database import get_db
-from backend.models import ExperimentRun, TraceStep, Alpha
-
+from backend.services.run_service import RunService
 
 router = APIRouter(
     prefix="/runs",
@@ -15,6 +19,19 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
+
+# =============================================================================
+# DEPENDENCY INJECTION
+# =============================================================================
+
+def get_run_service(db: AsyncSession = Depends(get_db)) -> RunService:
+    """Get RunService instance with injected dependencies."""
+    return RunService(db)
+
+
+# =============================================================================
+# RESPONSE MODELS
+# =============================================================================
 
 class ExperimentRunDetailResponse(BaseModel):
     id: int
@@ -73,31 +90,65 @@ class AlphaListResponse(BaseModel):
     total: int
 
 
+# =============================================================================
+# ENDPOINTS
+# =============================================================================
+
 @router.get("/{run_id}", response_model=ExperimentRunDetailResponse)
-async def get_run(run_id: int, db: AsyncSession = Depends(get_db)):
-    query = select(ExperimentRun).where(ExperimentRun.id == run_id)
-    result = await db.execute(query)
-    run = result.scalar_one_or_none()
+async def get_run(
+    run_id: int,
+    service: RunService = Depends(get_run_service),
+):
+    """Get experiment run details."""
+    run = await service.get_run(run_id)
+    
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    return run
+    
+    return ExperimentRunDetailResponse(
+        id=run.id,
+        task_id=run.task_id,
+        status=run.status,
+        trigger_source=run.trigger_source,
+        celery_task_id=run.celery_task_id,
+        config_snapshot=run.config_snapshot,
+        prompt_version=run.prompt_version,
+        thresholds_version=run.thresholds_version,
+        strategy_snapshot=run.strategy_snapshot,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        error_message=run.error_message,
+    )
 
 
 @router.get("/{run_id}/trace", response_model=List[TraceStepResponse])
-async def get_run_trace(run_id: int, db: AsyncSession = Depends(get_db)):
-    run_query = select(ExperimentRun).where(ExperimentRun.id == run_id)
-    run_res = await db.execute(run_query)
-    if not run_res.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    query = (
-        select(TraceStep)
-        .where(TraceStep.run_id == run_id)
-        .order_by(TraceStep.step_order)
-    )
-    result = await db.execute(query)
-    steps = result.scalars().all()
-    return list(steps)
+async def get_run_trace(
+    run_id: int,
+    service: RunService = Depends(get_run_service),
+):
+    """Get trace steps for an experiment run."""
+    try:
+        steps = await service.get_run_trace(run_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    return [
+        TraceStepResponse(
+            id=s.id,
+            task_id=s.task_id,
+            run_id=s.run_id,
+            step_type=s.step_type,
+            step_order=s.step_order,
+            iteration=s.iteration,
+            input_data=s.input_data,
+            output_data=s.output_data,
+            duration_ms=s.duration_ms,
+            status=s.status,
+            error_message=s.error_message,
+            created_at=s.created_at,
+        )
+        for s in steps
+    ]
 
 
 @router.get("/{run_id}/alphas", response_model=AlphaListResponse)
@@ -106,42 +157,33 @@ async def get_run_alphas(
     quality_status: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db),
+    service: RunService = Depends(get_run_service),
 ):
-    run_query = select(ExperimentRun).where(ExperimentRun.id == run_id)
-    run_res = await db.execute(run_query)
-    if not run_res.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    query = select(Alpha).where(Alpha.run_id == run_id)
-    if quality_status:
-        query = query.where(Alpha.quality_status == quality_status)
-
-    count_query = select(Alpha.id).where(Alpha.run_id == run_id)
-    if quality_status:
-        count_query = count_query.where(Alpha.quality_status == quality_status)
-
-    total = len((await db.execute(count_query)).scalars().all())
-
-    query = query.order_by(Alpha.created_at.desc()).limit(limit).offset(offset)
-    result = await db.execute(query)
-    alphas = result.scalars().all()
-
-    items: List[AlphaListItem] = []
-    for a in alphas:
-        items.append(
-            AlphaListItem(
-                id=a.id,
-                alpha_id=a.alpha_id,
-                task_id=a.task_id,
-                run_id=a.run_id,
-                expression=a.expression,
-                region=a.region,
-                dataset_id=a.dataset_id,
-                quality_status=a.quality_status,
-                metrics=a.metrics or {},
-                created_at=a.created_at,
-            )
+    """Get alphas for an experiment run."""
+    try:
+        result = await service.get_run_alphas(
+            run_id=run_id,
+            quality_status=quality_status,
+            limit=limit,
+            offset=offset,
         )
-
-    return AlphaListResponse(items=items, total=total)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    items = [
+        AlphaListItem(
+            id=a.id,
+            alpha_id=a.alpha_id,
+            task_id=a.task_id,
+            run_id=a.run_id,
+            expression=a.expression,
+            region=a.region,
+            dataset_id=a.dataset_id,
+            quality_status=a.quality_status,
+            metrics=a.metrics,
+            created_at=a.created_at,
+        )
+        for a in result.items
+    ]
+    
+    return AlphaListResponse(items=items, total=result.total)

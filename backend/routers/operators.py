@@ -1,19 +1,37 @@
+"""
+Operators Router - Operator management
+
+Uses OperatorService for all business logic.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 
 from backend.database import get_db
-from backend.models import Operator
-from backend.tasks import sync_operators_from_brain
+from backend.services.operator_service import OperatorService, OperatorListFilters
 
 router = APIRouter(
     prefix="/operators",
     tags=["operators"],
     responses={404: {"description": "Not found"}},
 )
+
+
+# =============================================================================
+# DEPENDENCY INJECTION
+# =============================================================================
+
+def get_operator_service(db: AsyncSession = Depends(get_db)) -> OperatorService:
+    """Get OperatorService instance with injected dependencies."""
+    return OperatorService(db)
+
+
+# =============================================================================
+# RESPONSE MODELS
+# =============================================================================
 
 class OperatorResponse(BaseModel):
     id: int
@@ -27,9 +45,15 @@ class OperatorResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 class SyncResponse(BaseModel):
     message: str
     task_id: str
+
+
+# =============================================================================
+# ENDPOINTS
+# =============================================================================
 
 @router.get("", response_model=List[OperatorResponse])
 async def list_operators(
@@ -37,34 +61,39 @@ async def list_operators(
     search: Optional[str] = Query(None, description="Search by name"),
     limit: int = Query(100, ge=1),
     offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db)
+    service: OperatorService = Depends(get_operator_service),
 ):
-    """
-    List available operators with filtering.
-    """
-    query = select(Operator).order_by(Operator.name.asc())
+    """List available operators with filtering."""
+    filters = OperatorListFilters(
+        category=category,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
     
-    if category:
-        query = query.where(Operator.category == category)
-        
-    if search:
-        search_term = f"%{search}%"
-        query = query.where(Operator.name.ilike(search_term))
+    operators = await service.list_operators(filters)
     
-    query = query.limit(limit).offset(offset)
-    
-    result = await db.execute(query)
-    operators = result.scalars().all()
-    
-    return [OperatorResponse.model_validate(op) for op in operators]
+    return [
+        OperatorResponse(
+            id=op.id,
+            name=op.name,
+            category=op.category,
+            description=op.description,
+            param_count=op.param_count,
+            is_active=op.is_active,
+            created_at=op.created_at,
+        )
+        for op in operators
+    ]
+
 
 @router.post("/sync", response_model=SyncResponse)
-async def sync_operators(background_tasks: BackgroundTasks = None):
-    """
-    Trigger manual synchronization of operators from BRAIN platform.
-    """
-    task = sync_operators_from_brain.delay()
+async def sync_operators(
+    service: OperatorService = Depends(get_operator_service),
+):
+    """Trigger manual synchronization of operators from BRAIN platform."""
+    task_id = service.trigger_operator_sync()
     return SyncResponse(
         message="Operator sync started",
-        task_id=str(task.id)
+        task_id=task_id,
     )

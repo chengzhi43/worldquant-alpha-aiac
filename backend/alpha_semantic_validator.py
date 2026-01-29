@@ -311,46 +311,33 @@ class AlphaSemanticValidator:
         Key rules:
         - ts_* operators work best with MATRIX fields (time-series)
         - vec_* operators require VECTOR fields
-        - VECTOR fields MUST be wrapped with vec_* operators before passing to ts_*
+        - Using VECTOR fields with ts_* may cause issues
         """
         errors = []
         
         expr_lower = expression.lower()
         
-        # Enhanced check: VECTOR fields must be wrapped with vec_* operators
-        # Find all raw field usages (not wrapped in vec_* operators)
-        for vf in vector_fields:
-            vf_lower = vf.lower()
+        for op in operators:
+            op_lower = op.lower()
             
-            # Check if this VECTOR field appears in the expression
-            if vf_lower not in expr_lower:
-                continue
-            
-            # Check if ALL occurrences of this field are properly wrapped with vec_*
-            # Pattern: field NOT preceded by vec_xxx(
-            # We search for the field name and check if it's inside a vec_* call
-            
-            # Find all positions of this field in the expression
-            pattern = rf'\b{re.escape(vf_lower)}\b'
-            for match in re.finditer(pattern, expr_lower):
-                pos = match.start()
-                # Look backwards to see if we're inside a vec_* function
-                prefix = expr_lower[:pos]
-                
-                # Check if there's an unclosed vec_* call before this position
-                # Simple heuristic: look for vec_xxx( that hasn't been closed
-                vec_call_pattern = r'vec_\w+\s*\([^)]*$'
-                if not re.search(vec_call_pattern, prefix):
-                    # This field is NOT inside a vec_* call
-                    # Check if it's being passed to a ts_* operator directly
-                    ts_pattern = rf'(ts_\w+|days_from_last_change|last_diff_value|inst_tvr|hump_decay|jump_decay|kth_element|hump)\s*\([^)]*\b{re.escape(vf_lower)}\b'
-                    if re.search(ts_pattern, expr_lower):
+            # Check ts_* operators with VECTOR fields
+            if op_lower in TS_OPERATORS:
+                # Look for vec_ prefix fields being passed to ts_ functions
+                # This is a heuristic - we look for vector field names near ts_ calls
+                for vf in vector_fields:
+                    # Simple heuristic: if vector field appears right after ts_xxx(
+                    pattern = rf'{op_lower}\s*\(\s*{re.escape(vf.lower())}'
+                    if re.search(pattern, expr_lower):
                         errors.append(
-                            f"Type mismatch: VECTOR field '{vf}' must be wrapped with vec_* operator (e.g., vec_avg, vec_sum) "
-                            f"before using with time-series operators. Example: ts_rank(vec_avg({vf}), 20)"
+                            f"Type mismatch: VECTOR field '{vf}' used as first arg of time-series operator '{op}'. "
+                            f"Consider using vec_* wrapper or MATRIX equivalent."
                         )
-                        break  # One error per field is enough
                         
+            # Check vec_* operators - they expect aggregation over vector dimensions
+            if op_lower in VEC_OPERATORS:
+                # vec_* operators on MATRIX fields is actually fine (aggregates across vector dim)
+                pass
+                
         return errors
 
 

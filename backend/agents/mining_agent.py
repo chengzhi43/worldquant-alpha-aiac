@@ -401,6 +401,11 @@ class MiningAgent:
                     
                 except Exception as e:
                     logger.error(f"[MiningAgent] Round {iteration} error: {e}")
+                    # Rollback any failed transaction
+                    try:
+                        await self.db.rollback()
+                    except Exception:
+                        pass
                     # Create rescue strategy and continue
                     current_strategy = EvolutionStrategy.rescue_mode(
                         problematic_fields=list(current_strategy.avoid_fields),
@@ -751,6 +756,10 @@ class MiningAgent:
             
         except Exception as e:
             logger.warning(f"[MiningAgent] Feedback learning failed: {e}")
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
     
     async def _run_optimization_chain(
         self,

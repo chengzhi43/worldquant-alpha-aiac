@@ -1,22 +1,34 @@
 """
-Tasks Router - Enhanced with Trace visualization and intervention support
+Tasks Router - Mining task management
+
+Uses TaskService for all business logic.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
+from celery.result import AsyncResult
 
 from backend.database import get_db
-from backend.models import MiningTask, TraceStep, Alpha, ExperimentRun
+from backend.services.task_service import TaskService, TaskCreateData
+from backend.celery_app import celery_app
 
 router = APIRouter(
     prefix="/tasks",
     tags=["tasks"],
     responses={404: {"description": "Not found"}},
 )
+
+
+# =============================================================================
+# DEPENDENCY INJECTION
+# =============================================================================
+
+def get_task_service(db: AsyncSession = Depends(get_db)) -> TaskService:
+    """Get TaskService instance with injected dependencies."""
+    return TaskService(db)
 
 
 # =============================================================================
@@ -27,9 +39,9 @@ class TaskCreateRequest(BaseModel):
     name: str
     region: str = "USA"
     universe: str = "TOP3000"
-    dataset_strategy: str = "AUTO"  # AUTO or SPECIFIC
+    dataset_strategy: str = "AUTO"
     target_datasets: List[str] = []
-    agent_mode: str = "AUTONOMOUS"  # AUTONOMOUS or INTERACTIVE
+    agent_mode: str = "AUTONOMOUS"
     daily_goal: int = 4
     config: dict = {}
 
@@ -90,7 +102,7 @@ class ExperimentRunResponse(BaseModel):
 
 class InterventionRequest(BaseModel):
     action: str  # PAUSE, RESUME, SKIP, ADJUST
-    parameters: dict = {}  # For ADJUST action
+    parameters: dict = {}
 
 
 # =============================================================================
@@ -102,48 +114,39 @@ async def list_tasks(
     status: Optional[str] = Query(None, description="Filter by status"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db)
+    service: TaskService = Depends(get_task_service),
 ):
-    """
-    List all mining tasks with optional status filter.
-    """
-    query = select(MiningTask).order_by(MiningTask.created_at.desc())
+    """List all mining tasks with optional status filter."""
+    tasks = await service.list_tasks(status=status, limit=limit, offset=offset)
     
-    if status:
-        query = query.where(MiningTask.status == status)
-    
-    query = query.limit(limit).offset(offset)
-    
-    result = await db.execute(query)
-    tasks = result.scalars().all()
-    
-    return [TaskResponse(
-        id=t.id,
-        task_name=t.task_name,
-        region=t.region,
-        universe=t.universe,
-        dataset_strategy=t.dataset_strategy,
-        agent_mode=t.agent_mode,
-        status=t.status,
-        daily_goal=t.daily_goal,
-        progress_current=t.progress_current,
-        current_iteration=t.current_iteration,
-        max_iterations=t.max_iterations,
-        created_at=t.created_at,
-        updated_at=t.updated_at
-    ) for t in tasks]
+    return [
+        TaskResponse(
+            id=t.id,
+            task_name=t.task_name,
+            region=t.region,
+            universe=t.universe,
+            dataset_strategy=t.dataset_strategy,
+            agent_mode=t.agent_mode,
+            status=t.status,
+            daily_goal=t.daily_goal,
+            progress_current=t.progress_current,
+            current_iteration=t.current_iteration,
+            max_iterations=t.max_iterations,
+            created_at=t.created_at,
+            updated_at=t.updated_at,
+        )
+        for t in tasks
+    ]
 
 
 @router.post("", response_model=TaskResponse)
 async def create_task(
     request: TaskCreateRequest,
-    db: AsyncSession = Depends(get_db)
+    service: TaskService = Depends(get_task_service),
 ):
-    """
-    Create a new mining task.
-    """
-    task = MiningTask(
-        task_name=request.name,
+    """Create a new mining task."""
+    data = TaskCreateData(
+        name=request.name,
         region=request.region,
         universe=request.universe,
         dataset_strategy=request.dataset_strategy,
@@ -151,12 +154,9 @@ async def create_task(
         agent_mode=request.agent_mode,
         daily_goal=request.daily_goal,
         config=request.config,
-        status="PENDING"
     )
     
-    db.add(task)
-    await db.commit()
-    await db.refresh(task)
+    task = await service.create_task(data)
     
     return TaskResponse(
         id=task.id,
@@ -171,234 +171,151 @@ async def create_task(
         current_iteration=task.current_iteration,
         max_iterations=task.max_iterations,
         created_at=task.created_at,
-        updated_at=task.updated_at
+        updated_at=task.updated_at,
     )
 
 
 @router.get("/{task_id}", response_model=TaskDetailResponse)
-async def get_task(task_id: int, db: AsyncSession = Depends(get_db)):
-    """
-    Get task details including trace steps.
-    """
-    # Get task
-    task_query = select(MiningTask).where(MiningTask.id == task_id)
-    task_result = await db.execute(task_query)
-    task = task_result.scalar_one_or_none()
+async def get_task(
+    task_id: int,
+    service: TaskService = Depends(get_task_service),
+):
+    """Get task details including trace steps."""
+    detail = await service.get_task_detail(task_id)
     
-    if not task:
+    if not detail:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Get trace steps
-    steps_query = select(TraceStep).where(
-        TraceStep.task_id == task_id
-    ).order_by(TraceStep.step_order)
-    steps_result = await db.execute(steps_query)
-    steps = steps_result.scalars().all()
-    
-    # Count alphas
-    alphas_query = select(Alpha).where(Alpha.task_id == task_id)
-    alphas_result = await db.execute(alphas_query)
-    alphas_count = len(alphas_result.scalars().all())
-    
     return TaskDetailResponse(
-        id=task.id,
-        task_name=task.task_name,
-        region=task.region,
-        universe=task.universe,
-        dataset_strategy=task.dataset_strategy,
-        agent_mode=task.agent_mode,
-        status=task.status,
-        daily_goal=task.daily_goal,
-        progress_current=task.progress_current,
-        current_iteration=task.current_iteration,
-        max_iterations=task.max_iterations,
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        trace_steps=[TraceStepResponse(
-            id=s.id,
-            step_type=s.step_type,
-            step_order=s.step_order,
-            iteration=s.iteration,
-            input_data=s.input_data or {},
-            output_data=s.output_data or {},
-            duration_ms=s.duration_ms,
-            status=s.status,
-            error_message=s.error_message,
-            created_at=s.created_at
-        ) for s in steps],
-        alphas_count=alphas_count
+        id=detail.id,
+        task_name=detail.task_name,
+        region=detail.region,
+        universe=detail.universe,
+        dataset_strategy=detail.dataset_strategy,
+        agent_mode=detail.agent_mode,
+        status=detail.status,
+        daily_goal=detail.daily_goal,
+        progress_current=detail.progress_current,
+        current_iteration=detail.current_iteration,
+        max_iterations=detail.max_iterations,
+        created_at=detail.created_at,
+        updated_at=detail.updated_at,
+        trace_steps=[
+            TraceStepResponse(
+                id=s.id,
+                step_type=s.step_type,
+                step_order=s.step_order,
+                iteration=s.iteration,
+                input_data=s.input_data,
+                output_data=s.output_data,
+                duration_ms=s.duration_ms,
+                status=s.status,
+                error_message=s.error_message,
+                created_at=s.created_at,
+            )
+            for s in detail.trace_steps
+        ],
+        alphas_count=detail.alphas_count,
     )
 
 
 @router.get("/{task_id}/trace", response_model=List[TraceStepResponse])
 async def get_task_trace(
     task_id: int,
-    db: AsyncSession = Depends(get_db)
+    service: TaskService = Depends(get_task_service),
 ):
-    """
-    Get the complete trace (all steps) for a task.
-    This is the RD-Agent style trace visualization endpoint.
-    """
-    # Verify task exists
-    task_query = select(MiningTask).where(MiningTask.id == task_id)
-    task_result = await db.execute(task_query)
-    if not task_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Task not found")
+    """Get the complete trace (all steps) for a task."""
+    try:
+        steps = await service.get_task_trace(task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
-    # Get all trace steps
-    steps_query = select(TraceStep).where(
-        TraceStep.task_id == task_id
-    ).order_by(TraceStep.step_order)
-    
-    result = await db.execute(steps_query)
-    steps = result.scalars().all()
-    
-    return [TraceStepResponse(
-        id=s.id,
-        step_type=s.step_type,
-        step_order=s.step_order,
-        iteration=s.iteration,
-        input_data=s.input_data or {},
-        output_data=s.output_data or {},
-        duration_ms=s.duration_ms,
-        status=s.status,
-        error_message=s.error_message,
-        created_at=s.created_at
-    ) for s in steps]
+    return [
+        TraceStepResponse(
+            id=s.id,
+            step_type=s.step_type,
+            step_order=s.step_order,
+            iteration=s.iteration,
+            input_data=s.input_data,
+            output_data=s.output_data,
+            duration_ms=s.duration_ms,
+            status=s.status,
+            error_message=s.error_message,
+            created_at=s.created_at,
+        )
+        for s in steps
+    ]
 
 
 @router.post("/{task_id}/start")
-async def start_task(task_id: int, db: AsyncSession = Depends(get_db)):
-    """
-    Start a mining task.
-    """
-    task_query = select(MiningTask).where(MiningTask.id == task_id)
-    task_result = await db.execute(task_query)
-    task = task_result.scalar_one_or_none()
-    
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    if task.status not in ["PENDING", "PAUSED", "STOPPED", "FAILED", "COMPLETED"]:
-        raise HTTPException(status_code=400, detail=f"Cannot start task in {task.status} status")
-    
-    await db.execute(
-        update(MiningTask)
-        .where(MiningTask.id == task_id)
-        .values(status="RUNNING")
-    )
-    await db.commit()
-
-    run = ExperimentRun(
-        task_id=task_id,
-        status="RUNNING",
-        trigger_source="API",
-        celery_task_id=None,
-        config_snapshot={
-            "task": {
-                "region": task.region,
-                "universe": task.universe,
-                "dataset_strategy": task.dataset_strategy,
-                "target_datasets": task.target_datasets,
-                "daily_goal": task.daily_goal,
-                "config": task.config,
-            },
-        },
-        strategy_snapshot={},
-    )
-    db.add(run)
-    await db.commit()
-    await db.refresh(run)
-    
-    # Trigger actual mining via Celery
-    from backend.tasks import run_mining_task
-    celery_task = run_mining_task.delay(task_id, run.id)
-
-    run.celery_task_id = celery_task.id
-    await db.commit()
-    
-    return {"message": "Task started", "task_id": task_id, "run_id": run.id, "celery_task_id": celery_task.id}
+async def start_task(
+    task_id: int,
+    service: TaskService = Depends(get_task_service),
+):
+    """Start a mining task."""
+    try:
+        result = await service.start_task(task_id)
+        return {
+            "message": "Task started",
+            "task_id": task_id,
+            "run_id": result["run_id"],
+            "celery_task_id": result["celery_task_id"],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/{task_id}/runs", response_model=List[ExperimentRunResponse])
-async def list_task_runs(task_id: int, db: AsyncSession = Depends(get_db)):
-    task_query = select(MiningTask).where(MiningTask.id == task_id)
-    task_result = await db.execute(task_query)
-    if not task_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    query = select(ExperimentRun).where(ExperimentRun.task_id == task_id).order_by(ExperimentRun.started_at.desc())
-    result = await db.execute(query)
-    runs = result.scalars().all()
-    return list(runs)
+async def list_task_runs(
+    task_id: int,
+    service: TaskService = Depends(get_task_service),
+):
+    """List all experiment runs for a task."""
+    try:
+        runs = await service.list_task_runs(task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    return [
+        ExperimentRunResponse(
+            id=r.id,
+            task_id=r.task_id,
+            status=r.status,
+            trigger_source=r.trigger_source,
+            celery_task_id=r.celery_task_id,
+            started_at=r.started_at,
+            finished_at=r.finished_at,
+            error_message=r.error_message,
+        )
+        for r in runs
+    ]
 
 
 @router.post("/{task_id}/intervene")
 async def intervene_task(
     task_id: int,
     request: InterventionRequest,
-    db: AsyncSession = Depends(get_db)
+    service: TaskService = Depends(get_task_service),
 ):
-    """
-    Human intervention endpoint - pause, resume, skip, or adjust a running task.
-    This is the Human-in-the-Loop interaction point.
-    """
-    task_query = select(MiningTask).where(MiningTask.id == task_id)
-    task_result = await db.execute(task_query)
-    task = task_result.scalar_one_or_none()
-    
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    action = request.action.upper()
-    
-    if action == "PAUSE":
-        if task.status != "RUNNING":
-            raise HTTPException(status_code=400, detail="Can only pause running tasks")
-        new_status = "PAUSED"
-    elif action == "RESUME":
-        if task.status != "PAUSED":
-            raise HTTPException(status_code=400, detail="Can only resume paused tasks")
-        new_status = "RUNNING"
-    elif action == "STOP":
-        new_status = "STOPPED"
-    elif action == "SKIP":
-        # Skip current dataset - just log and continue
-        # TODO: Implement skip logic in the mining loop
-        return {"message": "Skip signal sent", "task_id": task_id}
-    elif action == "ADJUST":
-        # Update task config with new parameters
-        new_config = {**task.config, **request.parameters}
-        await db.execute(
-            update(MiningTask)
-            .where(MiningTask.id == task_id)
-            .values(config=new_config)
+    """Human intervention endpoint - pause, resume, skip, or adjust a running task."""
+    try:
+        result = await service.intervene_task(
+            task_id=task_id,
+            action=request.action,
+            parameters=request.parameters,
         )
-        await db.commit()
-        return {"message": "Task config adjusted", "task_id": task_id, "new_config": new_config}
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
-    
-    await db.execute(
-        update(MiningTask)
-        .where(MiningTask.id == task_id)
-        .values(status=new_status)
-    )
-    await db.commit()
-    
-    return {"message": f"Task {action.lower()}d", "task_id": task_id, "new_status": new_status}
+        return {
+            "message": f"Task {result['action']}",
+            "task_id": task_id,
+            **result,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-from celery.result import AsyncResult
-from backend.celery_app import celery_app
 
 @router.get("/celery/{task_id}/status")
 async def get_celery_task_status(task_id: str):
-    """
-    Get status of a Celery background task by UUID.
-    Used for polling sync tasks.
-    """
-    # AsyncResult check is sync, but fast enough.
-    # We can run it directly.
+    """Get status of a Celery background task by UUID."""
     result = AsyncResult(task_id, app=celery_app)
     
     response = {
@@ -407,15 +324,11 @@ async def get_celery_task_status(task_id: str):
     }
     
     if result.ready():
-        # If result is an exception, accessing .result might raise it, 
-        # unless we check carefully or use .info (depends on configuration)
-        # But usually .result is fine if we handle exception wrapping
         try:
-             # If failed, result.result is the exception object
-             if result.failed():
-                 response["error"] = str(result.result)
-             else:
-                 response["result"] = result.result
+            if result.failed():
+                response["error"] = str(result.result)
+            else:
+                response["result"] = result.result
         except Exception as e:
             response["error"] = str(e)
             

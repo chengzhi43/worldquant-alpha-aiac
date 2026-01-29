@@ -1,0 +1,234 @@
+{
+  "timestamp": "2026-01-29T15:57:30.047553",
+  "git_commit": "7075a16",
+  "total": 18,
+  "passed": 18,
+  "failed": 0,
+  "pass_rate": 1.0,
+  "metrics": {
+    "syntax_validation_accuracy": 0.8333333333333334,
+    "threshold_checks_passed": 1.0,
+    "category_inference_accuracy": 1.0,
+    "failure_classification_accuracy": 0.8333333333333334,
+    "mutation_validity_rate": 1.0,
+    "diversity_logic_correct": 1.0,
+    "pattern_count": 10,
+    "kb_total_entries": 59
+  },
+  "tests": [
+    {
+      "name": "Alpha Syntax Validation",
+      "category": "unit",
+      "passed": true,
+      "message": "Accuracy: 83% (5/6)",
+      "duration_ms": 10.010719299316406,
+      "details": {
+        "valid_passed": 3,
+        "invalid_passed": 2
+      }
+    },
+    {
+      "name": "Threshold Calculation",
+      "category": "unit",
+      "passed": true,
+      "message": "4/4 checks passed",
+      "duration_ms": 4.000663757324219,
+      "details": {
+        "USA base sharpe": true,
+        "KOR < USA sharpe": true,
+        "NEWS adjusted": true,
+        "delay=0 stricter": true
+      }
+    },
+    {
+      "name": "Category Inference",
+      "category": "unit",
+      "passed": true,
+      "message": "Accuracy: 100% (9/9)",
+      "duration_ms": 3156.175374984741,
+      "details": {}
+    },
+    {
+      "name": "Failure Classification",
+      "category": "unit",
+      "passed": true,
+      "message": "Accuracy: 83% (5/6)",
+      "duration_ms": 0.0,
+      "details": {
+        "failed_cases": [
+          "quality_fail: expected=LOW_SHARPE, got=LOW_FITNESS"
+        ]
+      }
+    },
+    {
+      "name": "Mutation Operations",
+      "category": "unit",
+      "passed": true,
+      "message": "8/8 checks passed",
+      "duration_ms": 5.537271499633789,
+      "details": {
+        "operator_sub works": true,
+        "window_param works": true,
+        "add_wrapper works": true,
+        "sign_flip works": true,
+        "balanced parens: operator_sub: ts_ran": true,
+        "balanced parens: window: ts_rank 5 ->": true,
+        "balanced parens: add_wrapper: abs": true,
+        "balanced parens: add_negative": true
+      }
+    },
+    {
+      "name": "Diversity Scoring",
+      "category": "unit",
+      "passed": true,
+      "message": "5/5 checks passed",
+      "duration_ms": 3.013134002685547,
+      "details": {
+        "same_combo_score": 0.3363636363636364,
+        "new_combo_score": 0.8636363636363636
+      }
+    },
+    {
+      "name": "Pattern Retrieval",
+      "category": "unit",
+      "passed": true,
+      "message": "6/6 checks passed",
+      "duration_ms": 1.0001659393310547,
+      "details": {
+        "total_101_patterns": 10,
+        "pv_patterns": 5,
+        "analyst_patterns": 5
+      }
+    },
+    {
+      "name": "Alpha Evaluation Pipeline",
+      "category": "integration",
+      "passed": true,
+      "message": "7/7 checks passed",
+      "duration_ms": 0.0,
+      "details": {
+        "good_alpha_score": 0.8833182640144666,
+        "bad_alpha_score": 0.2926160337552743
+      }
+    },
+    {
+      "name": "RAG to Generation Flow",
+      "category": "integration",
+      "passed": true,
+      "message": "5/5 checks passed",
+      "duration_ms": 0.0,
+      "details": {
+        "category": "analyst",
+        "patterns_count": 5,
+        "region_config": {
+          "recommended_universe": "TOP3000",
+          "recommended_decay": 4,
+          "recommended_neutralization": "SUBINDUSTRY",
+          "sharpe_adjustment": 1.0,
+          "notes": "Most liquid market. Standard settings work well."
+        }
+      }
+    },
+    {
+      "name": "Feedback Loop Integration",
+      "category": "integration",
+      "passed": true,
+      "message": "5/5 checks passed",
+      "duration_ms": 17.83275604248047,
+      "details": {
+        "failure_category": "LOW_SHARPE",
+        "recommendation": "Add smoothing (ts_decay_linear), try different fie"
+      }
+    },
+    {
+      "name": "Regression: syntax_validation_accuracy",
+      "category": "regression",
+      "passed": true,
+      "message": "No baseline (new metric). Current: 0.833",
+      "duration_ms": 0.0,
+      "details": {}
+    },
+    {
+      "name": "Regression: category_inference_accuracy",
+      "category": "regression",
+      "passed": true,
+      "message": "stable: 1.000 -> 1.000 (diff: +0.000)",
+      "duration_ms": 0.0,
+      "details": {
+        "baseline": 1.0,
+        "current": 1.0,
+        "diff": 0.0
+      }
+    },
+    {
+      "name": "Regression: failure_classification_accuracy",
+      "category": "regression",
+      "passed": true,
+      "message": "stable: 0.833 -> 0.833 (diff: +0.000)",
+      "duration_ms": 0.0,
+      "details": {
+        "baseline": 0.8333333333333334,
+        "current": 0.8333333333333334,
+        "diff": 0.0
+      }
+    },
+    {
+      "name": "Regression: mutation_validity_rate",
+      "category": "regression",
+      "passed": true,
+      "message": "stable: 1.000 -> 1.000 (diff: +0.000)",
+      "duration_ms": 0.0,
+      "details": {
+        "baseline": 1.0,
+        "current": 1.0,
+        "diff": 0.0
+      }
+    },
+    {
+      "name": "Regression: diversity_logic_correct",
+      "category": "regression",
+      "passed": true,
+      "message": "stable: 1.000 -> 1.000 (diff: +0.000)",
+      "duration_ms": 0.0,
+      "details": {
+        "baseline": 1.0,
+        "current": 1.0,
+        "diff": 0.0
+      }
+    },
+    {
+      "name": "Database Connectivity",
+      "category": "e2e",
+      "passed": true,
+      "message": "Connected successfully",
+      "duration_ms": 73.24337959289551,
+      "details": {}
+    },
+    {
+      "name": "Knowledge Base Seeding",
+      "category": "e2e",
+      "passed": true,
+      "message": "Total entries: 59",
+      "duration_ms": 209.11669731140137,
+      "details": {
+        "total": 59,
+        "by_type": {
+          "FAILURE_PITFALL": 14,
+          "SUCCESS_PATTERN": 45
+        }
+      }
+    },
+    {
+      "name": "Genetic Optimization Cycle",
+      "category": "e2e",
+      "passed": true,
+      "message": "5/5 checks passed",
+      "duration_ms": 2.012968063354492,
+      "details": {
+        "initial_population": 20,
+        "final_population": 20,
+        "simulations_used": 5
+      }
+    }
+  ]
+}

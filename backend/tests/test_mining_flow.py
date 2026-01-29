@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 from backend.database import init_db, AsyncSessionLocal
 from backend.services.mining_service import MiningService, MiningTask
 from backend.agents.agent_hub import agent_hub
-from backend.adapters.brain import brain_client
+from backend.adapters.brain_adapter import get_brain_adapter
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)

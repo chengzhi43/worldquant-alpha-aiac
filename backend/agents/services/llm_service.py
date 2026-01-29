@@ -1,18 +1,21 @@
 """
 LLM Service - Unified LLM calling interface with logging and retries
-High cohesion: All LLM-related logic in one place
+
+Implements LLMProtocol for dependency injection and testability.
+High cohesion: All LLM-related logic in one place.
 """
 
 import asyncio
 import json
 import time
-from typing import Dict, List, Optional, Any, Type
+from typing import Dict, List, Optional, Any, Type, Tuple
 from pydantic import BaseModel
 import openai
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from loguru import logger
 
 from backend.config import settings
+from backend.protocols.llm_protocol import LLMProtocol, LLMResponse as LLMResponseProtocol
 
 
 class LLMResponse(BaseModel):
@@ -24,15 +27,33 @@ class LLMResponse(BaseModel):
     latency_ms: int = 0
     success: bool = True
     error: Optional[str] = None
+    
+    def to_protocol_response(self) -> LLMResponseProtocol:
+        """Convert to protocol response type."""
+        return LLMResponseProtocol(
+            content=self.content,
+            parsed=self.parsed,
+            model=self.model,
+            tokens_used=self.tokens_used,
+            latency_ms=self.latency_ms,
+            success=self.success,
+            error=self.error,
+        )
 
 
 class LLMService:
     """
-    Unified LLM Service with:
+    Unified LLM Service implementing LLMProtocol.
+    
+    Features:
     - Automatic retries with exponential backoff
     - JSON cleaning (markdown removal)
     - Token tracking
     - Structured logging
+    - Credential caching with invalidation support
+    
+    This class implements the LLMProtocol interface, allowing for
+    easy mocking in tests and dependency injection.
     """
     
     def __init__(

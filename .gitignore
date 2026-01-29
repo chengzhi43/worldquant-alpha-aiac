@@ -1,6 +1,5 @@
 *.pyc
 .env
 __pycache__
-RD-Agent
 frontend/node_modules
 venv

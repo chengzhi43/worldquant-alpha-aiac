@@ -1,22 +1,37 @@
 """
 Knowledge Router - CoSTEER Knowledge Base management
+
+Uses KnowledgeService for all business logic.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 
 from backend.database import get_db
-from backend.models import KnowledgeEntry
+from backend.services.knowledge_service import (
+    KnowledgeService,
+    KnowledgeListFilters,
+    KnowledgeCreateData,
+    KnowledgeUpdateData,
+)
 
 router = APIRouter(
     prefix="/knowledge",
     tags=["knowledge"],
     responses={404: {"description": "Not found"}},
 )
+
+
+# =============================================================================
+# DEPENDENCY INJECTION
+# =============================================================================
+
+def get_knowledge_service(db: AsyncSession = Depends(get_db)) -> KnowledgeService:
+    """Get KnowledgeService instance with injected dependencies."""
+    return KnowledgeService(db)
 
 
 # =============================================================================
@@ -63,164 +78,136 @@ async def list_knowledge(
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db)
+    service: KnowledgeService = Depends(get_knowledge_service),
 ):
-    """
-    List knowledge base entries with optional filters.
-    """
-    query = select(KnowledgeEntry).order_by(KnowledgeEntry.usage_count.desc())
+    """List knowledge base entries with optional filters."""
+    filters = KnowledgeListFilters(
+        entry_type=entry_type,
+        is_active=is_active,
+        limit=limit,
+        offset=offset,
+    )
     
-    if entry_type:
-        query = query.where(KnowledgeEntry.entry_type == entry_type)
-    if is_active is not None:
-        query = query.where(KnowledgeEntry.is_active == is_active)
+    entries = await service.list_entries(filters)
     
-    query = query.limit(limit).offset(offset)
-    
-    result = await db.execute(query)
-    entries = result.scalars().all()
-    
-    return [KnowledgeEntryResponse(
-        id=e.id,
-        entry_type=e.entry_type,
-        pattern=e.pattern,
-        description=e.description,
-        meta_data=e.meta_data or {},
-        usage_count=e.usage_count,
-        is_active=e.is_active,
-        created_by=e.created_by,
-        created_at=e.created_at,
-        updated_at=e.updated_at
-    ) for e in entries]
+    return [
+        KnowledgeEntryResponse(
+            id=e.id,
+            entry_type=e.entry_type,
+            pattern=e.pattern,
+            description=e.description,
+            meta_data=e.meta_data,
+            usage_count=e.usage_count,
+            is_active=e.is_active,
+            created_by=e.created_by,
+            created_at=e.created_at,
+            updated_at=e.updated_at,
+        )
+        for e in entries
+    ]
 
 
 @router.get("/success-patterns", response_model=List[KnowledgeEntryResponse])
 async def get_success_patterns(
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
+    service: KnowledgeService = Depends(get_knowledge_service),
 ):
-    """
-    Get successful alpha patterns for RAG retrieval.
-    These are used as few-shot examples for the Mining Agent.
-    """
-    query = select(KnowledgeEntry).where(
-        KnowledgeEntry.entry_type == "SUCCESS_PATTERN",
-        KnowledgeEntry.is_active == True
-    ).order_by(KnowledgeEntry.usage_count.desc()).limit(limit)
+    """Get successful alpha patterns for RAG retrieval."""
+    entries = await service.get_success_patterns(limit=limit)
     
-    result = await db.execute(query)
-    entries = result.scalars().all()
-    
-    return [KnowledgeEntryResponse(
-        id=e.id,
-        entry_type=e.entry_type,
-        pattern=e.pattern,
-        description=e.description,
-        meta_data=e.meta_data or {},
-        usage_count=e.usage_count,
-        is_active=e.is_active,
-        created_by=e.created_by,
-        created_at=e.created_at,
-        updated_at=e.updated_at
-    ) for e in entries]
+    return [
+        KnowledgeEntryResponse(
+            id=e.id,
+            entry_type=e.entry_type,
+            pattern=e.pattern,
+            description=e.description,
+            meta_data=e.meta_data,
+            usage_count=e.usage_count,
+            is_active=e.is_active,
+            created_by=e.created_by,
+            created_at=e.created_at,
+            updated_at=e.updated_at,
+        )
+        for e in entries
+    ]
 
 
 @router.get("/failure-pitfalls", response_model=List[KnowledgeEntryResponse])
 async def get_failure_pitfalls(
     limit: int = Query(50, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
+    service: KnowledgeService = Depends(get_knowledge_service),
 ):
-    """
-    Get failure pitfalls for the feedback loop.
-    These are used to generate negative constraints in prompts.
-    """
-    query = select(KnowledgeEntry).where(
-        KnowledgeEntry.entry_type == "FAILURE_PITFALL",
-        KnowledgeEntry.is_active == True
-    ).order_by(KnowledgeEntry.created_at.desc()).limit(limit)
+    """Get failure pitfalls for the feedback loop."""
+    entries = await service.get_failure_pitfalls(limit=limit)
     
-    result = await db.execute(query)
-    entries = result.scalars().all()
-    
-    return [KnowledgeEntryResponse(
-        id=e.id,
-        entry_type=e.entry_type,
-        pattern=e.pattern,
-        description=e.description,
-        meta_data=e.meta_data or {},
-        usage_count=e.usage_count,
-        is_active=e.is_active,
-        created_by=e.created_by,
-        created_at=e.created_at,
-        updated_at=e.updated_at
-    ) for e in entries]
+    return [
+        KnowledgeEntryResponse(
+            id=e.id,
+            entry_type=e.entry_type,
+            pattern=e.pattern,
+            description=e.description,
+            meta_data=e.meta_data,
+            usage_count=e.usage_count,
+            is_active=e.is_active,
+            created_by=e.created_by,
+            created_at=e.created_at,
+            updated_at=e.updated_at,
+        )
+        for e in entries
+    ]
 
 
 @router.get("/field-blacklist", response_model=List[KnowledgeEntryResponse])
 async def get_field_blacklist(
     region: Optional[str] = Query(None, description="Filter by region"),
-    db: AsyncSession = Depends(get_db)
+    service: KnowledgeService = Depends(get_knowledge_service),
 ):
-    """
-    Get blacklisted fields that should not be used in alpha expressions.
-    """
-    query = select(KnowledgeEntry).where(
-        KnowledgeEntry.entry_type == "FIELD_BLACKLIST",
-        KnowledgeEntry.is_active == True
-    )
+    """Get blacklisted fields that should not be used in alpha expressions."""
+    entries = await service.get_field_blacklist(region=region)
     
-    result = await db.execute(query)
-    entries = result.scalars().all()
-    
-    # Filter by region if specified
-    if region:
-        entries = [e for e in entries if e.meta_data.get("region") == region]
-    
-    return [KnowledgeEntryResponse(
-        id=e.id,
-        entry_type=e.entry_type,
-        pattern=e.pattern,
-        description=e.description,
-        meta_data=e.meta_data or {},
-        usage_count=e.usage_count,
-        is_active=e.is_active,
-        created_by=e.created_by,
-        created_at=e.created_at,
-        updated_at=e.updated_at
-    ) for e in entries]
+    return [
+        KnowledgeEntryResponse(
+            id=e.id,
+            entry_type=e.entry_type,
+            pattern=e.pattern,
+            description=e.description,
+            meta_data=e.meta_data,
+            usage_count=e.usage_count,
+            is_active=e.is_active,
+            created_by=e.created_by,
+            created_at=e.created_at,
+            updated_at=e.updated_at,
+        )
+        for e in entries
+    ]
 
 
 @router.post("", response_model=KnowledgeEntryResponse)
 async def create_knowledge_entry(
     request: KnowledgeCreateRequest,
-    db: AsyncSession = Depends(get_db)
+    service: KnowledgeService = Depends(get_knowledge_service),
 ):
-    """
-    Create a new knowledge entry (manually add a pattern or pitfall).
-    """
-    entry = KnowledgeEntry(
+    """Create a new knowledge entry (manually add a pattern or pitfall)."""
+    data = KnowledgeCreateData(
         entry_type=request.entry_type,
         pattern=request.pattern,
         description=request.description,
         meta_data=request.meta_data,
-        created_by="USER"
     )
     
-    db.add(entry)
-    await db.commit()
-    await db.refresh(entry)
+    entry = await service.create_entry(data)
     
     return KnowledgeEntryResponse(
         id=entry.id,
         entry_type=entry.entry_type,
         pattern=entry.pattern,
         description=entry.description,
-        meta_data=entry.meta_data or {},
+        meta_data=entry.meta_data,
         usage_count=entry.usage_count,
         is_active=entry.is_active,
         created_by=entry.created_by,
         created_at=entry.created_at,
-        updated_at=entry.updated_at
+        updated_at=entry.updated_at,
     )
 
 
@@ -228,72 +215,44 @@ async def create_knowledge_entry(
 async def update_knowledge_entry(
     entry_id: int,
     request: KnowledgeUpdateRequest,
-    db: AsyncSession = Depends(get_db)
+    service: KnowledgeService = Depends(get_knowledge_service),
 ):
-    """
-    Update a knowledge entry.
-    """
-    query = select(KnowledgeEntry).where(KnowledgeEntry.id == entry_id)
-    result = await db.execute(query)
-    entry = result.scalar_one_or_none()
+    """Update a knowledge entry."""
+    data = KnowledgeUpdateData(
+        pattern=request.pattern,
+        description=request.description,
+        meta_data=request.meta_data,
+        is_active=request.is_active,
+    )
     
-    if not entry:
-        raise HTTPException(status_code=404, detail="Knowledge entry not found")
-    
-    update_data = {}
-    if request.pattern is not None:
-        update_data["pattern"] = request.pattern
-    if request.description is not None:
-        update_data["description"] = request.description
-    if request.meta_data is not None:
-        update_data["meta_data"] = request.meta_data
-    if request.is_active is not None:
-        update_data["is_active"] = request.is_active
-    
-    if update_data:
-        await db.execute(
-            update(KnowledgeEntry)
-            .where(KnowledgeEntry.id == entry_id)
-            .values(**update_data)
-        )
-        await db.commit()
-        await db.refresh(entry)
+    try:
+        entry = await service.update_entry(entry_id, data)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
     return KnowledgeEntryResponse(
         id=entry.id,
         entry_type=entry.entry_type,
         pattern=entry.pattern,
         description=entry.description,
-        meta_data=entry.meta_data or {},
+        meta_data=entry.meta_data,
         usage_count=entry.usage_count,
         is_active=entry.is_active,
         created_by=entry.created_by,
         created_at=entry.created_at,
-        updated_at=entry.updated_at
+        updated_at=entry.updated_at,
     )
 
 
 @router.delete("/{entry_id}")
 async def delete_knowledge_entry(
     entry_id: int,
-    db: AsyncSession = Depends(get_db)
+    service: KnowledgeService = Depends(get_knowledge_service),
 ):
-    """
-    Delete a knowledge entry (or deactivate it).
-    """
-    query = select(KnowledgeEntry).where(KnowledgeEntry.id == entry_id)
-    result = await db.execute(query)
-    entry = result.scalar_one_or_none()
-    
-    if not entry:
-        raise HTTPException(status_code=404, detail="Knowledge entry not found")
-    
-    # Soft delete by deactivating
-    await db.execute(
-        update(KnowledgeEntry)
-        .where(KnowledgeEntry.id == entry_id)
-        .values(is_active=False)
-    )
-    await db.commit()
+    """Delete a knowledge entry (or deactivate it)."""
+    try:
+        await service.delete_entry(entry_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
     return {"message": "Knowledge entry deactivated", "id": entry_id}

@@ -769,7 +769,10 @@ class FeedbackAgent:
         failures: List[Dict],
         iteration: int,
         dataset_id: str,
-        region: str
+        region: str,
+        cumulative_success: int = 0,
+        target_goal: int = 4,
+        max_iterations: int = 10,
     ) -> Dict:
         """
         Learn from a complete mining round (Successes & Failures).
@@ -781,6 +784,9 @@ class FeedbackAgent:
             iteration: Current iteration index
             dataset_id: Context
             region: Context
+            cumulative_success: Total successful alphas so far
+            target_goal: Target number of alphas
+            max_iterations: Max iterations allowed
             
         Returns:
             Dict with learned stats
@@ -804,10 +810,22 @@ class FeedbackAgent:
             for f in failures[:5]
         ]) or "None"
         
+        # Build metrics summary
+        metrics_summary = f"- Pass: {len(successes)}, Fail: {len(failures)}, Total: {len(successes) + len(failures)}"
+        if successes:
+            avg_sharpe = sum(a.metrics.get('sharpe', 0) or 0 for a in successes) / len(successes)
+            metrics_summary += f"\n- Avg Sharpe: {avg_sharpe:.3f}"
+        
+        remaining_rounds = max_iterations - iteration
+        
         try:
             # Call LLM for analysis
             prompt = ROUND_ANALYSIS_USER.format(
                 iteration=iteration,
+                cumulative_success=cumulative_success,
+                target_goal=target_goal,
+                remaining_rounds=remaining_rounds,
+                metrics_summary=metrics_summary,
                 success_count=len(successes),
                 success_examples=success_examples,
                 failure_count=len(failures),

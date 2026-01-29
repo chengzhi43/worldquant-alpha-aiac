@@ -387,7 +387,10 @@ class MiningAgent:
                         alphas=alphas,
                         round_result=round_result,
                         iteration=iteration,
-                        dataset_id=dataset_id
+                        dataset_id=dataset_id,
+                        cumulative_success=total_success,
+                        target_alphas=target_alphas,
+                        max_iterations=max_iterations,
                     )
                     
                     # === OPTIMIZATION CHAIN (if applicable) ===
@@ -729,7 +732,10 @@ class MiningAgent:
         alphas: List[Alpha],
         round_result: RoundResult,
         iteration: int,
-        dataset_id: str
+        dataset_id: str,
+        cumulative_success: int = 0,
+        target_alphas: int = 4,
+        max_iterations: int = 10,
     ):
         """Run feedback learning to accumulate knowledge."""
         try:
@@ -740,7 +746,10 @@ class MiningAgent:
                 failures=failures,
                 iteration=iteration,
                 dataset_id=dataset_id,
-                region=task.region
+                region=task.region,
+                cumulative_success=cumulative_success,
+                target_goal=target_alphas,
+                max_iterations=max_iterations,
             )
             
             # Mark failures as analyzed

@@ -3,3 +3,14 @@
 __pycache__
 frontend/node_modules
 venv
+*.log
+*.log.*
+logs/
+.cursor/
+.claude/
+.cursorrules
+.clauderules
+.cursorignore
+.claudeignore
+.cursorignore
+backend/alembic/versions/

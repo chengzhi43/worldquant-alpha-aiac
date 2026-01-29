@@ -171,40 +171,49 @@ export default function TaskDetail() {
   const [activeIterations, setActiveIterations] = React.useState([])
   const lastMaxIterationRef = React.useRef(0)
   
-  // Sort and group steps by (dataset_id, iteration) to handle multi-dataset runs
+  // Sort and group steps by iteration (consolidate all steps of same iteration)
   const groupedSteps = React.useMemo(() => {
     const traceSteps = runTrace || task?.trace_steps
     if (!traceSteps) return {}
     
-    // Sort steps by created_at or id first, then by step_order within each group
+    // Sort steps by created_at or id first
     const sortedSteps = [...traceSteps].sort((a, b) => {
-      // Primary sort by id (chronological order)
       return (a.id || 0) - (b.id || 0)
     })
     
-    const groups = {}
+    // First pass: group by iteration only
+    const iterGroups = {}
     sortedSteps.forEach(step => {
       const iter = step.iteration || 1
-      // Extract dataset_id from input_data if available
-      const datasetId = step.input_data?.dataset_id || 'default'
-      // Create composite key: "dataset_id::iteration"
-      const groupKey = `${datasetId}::${iter}`
-      
-      if (!groups[groupKey]) {
-        groups[groupKey] = {
+      if (!iterGroups[iter]) {
+        iterGroups[iter] = {
           steps: [],
           iteration: iter,
-          dataset_id: datasetId,
-          // Use first step's created_at for ordering groups
+          dataset_ids: new Set(),
           firstCreatedAt: step.created_at
         }
       }
-      groups[groupKey].steps.push(step)
+      iterGroups[iter].steps.push(step)
+      // Collect all dataset_ids from this iteration
+      const datasetId = step.input_data?.dataset_id
+      if (datasetId) {
+        iterGroups[iter].dataset_ids.add(datasetId)
+      }
     })
     
-    // Sort steps within each group by step_order
-    Object.values(groups).forEach(g => {
-      g.steps.sort((a, b) => (a.step_order || 0) - (b.step_order || 0))
+    // Convert to final format with string key
+    const groups = {}
+    Object.entries(iterGroups).forEach(([iter, group]) => {
+      // Use dataset_ids as array, or null if none
+      const datasetIds = Array.from(group.dataset_ids)
+      const displayDatasetId = datasetIds.length > 0 ? datasetIds.join(', ') : null
+      
+      groups[iter] = {
+        steps: group.steps.sort((a, b) => (a.step_order || 0) - (b.step_order || 0)),
+        iteration: parseInt(iter),
+        dataset_id: displayDatasetId,
+        firstCreatedAt: group.firstCreatedAt
+      }
     })
     
     return groups
@@ -508,7 +517,7 @@ export default function TaskDetail() {
                    const header = (
                      <Space>
                        <Text strong>第 {iter} 轮</Text>
-                       {datasetId !== 'default' && (
+                       {datasetId && (
                          <Tag color="purple" style={{ fontSize: 11 }}>{datasetId}</Tag>
                        )}
                        {summaryStep && summaryStep.output_data?.success_rate !== undefined && (

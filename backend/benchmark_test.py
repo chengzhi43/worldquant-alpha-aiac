@@ -441,9 +441,11 @@ def simulate_pattern_retrieval():
 def simulate_diversity_exploration():
     """模拟多样性探索效果"""
     from backend.diversity_tracker import DiversityTracker, ExplorationRecord
+    from backend.alpha_semantic_validator import get_known_operators
     
     tracker = DiversityTracker()
-    tracker._load_available_operators()
+    # Use sync fallback for testing
+    tracker.available_operators = get_known_operators()
     
     # 模拟已经尝试的组合
     tried_datasets = ["pv6", "pv6", "pv6", "analyst15", "analyst15"]

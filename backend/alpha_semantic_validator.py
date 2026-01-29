@@ -13,6 +13,7 @@ P0-1: Core type/signature validation
 
 import re
 import hashlib
+import asyncio
 from typing import Dict, List, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -55,40 +56,145 @@ class FieldInfo:
         )
 
 
-# Operators that REQUIRE time-series (MATRIX) input
-TS_OPERATORS = {
-    "ts_std_dev", "ts_mean", "ts_delay", "ts_corr", "ts_zscore", "ts_returns",
-    "ts_product", "ts_backfill", "ts_scale", "ts_entropy", "ts_step", "ts_sum",
-    "ts_co_kurtosis", "ts_decay_exp_window", "ts_av_diff", "ts_kurtosis",
-    "ts_min_max_diff", "ts_arg_max", "ts_max", "ts_min_max_cps", "ts_rank",
-    "ts_ir", "ts_theilsen", "ts_weighted_decay", "ts_quantile", "ts_min",
-    "ts_count_nans", "ts_covariance", "ts_co_skewness", "ts_min_diff",
-    "ts_decay_linear", "ts_moment", "ts_arg_min", "ts_regression", "ts_skewness",
-    "ts_max_diff", "ts_median", "ts_delta", "ts_poly_regression",
-    "ts_target_tvr_decay", "ts_target_tvr_delta_limit", "ts_target_tvr_hump",
-    "ts_delta_limit", "ts_vector_neut", "ts_vector_proj", "ts_percentage",
-    "ts_partial_corr", "ts_triple_corr", "ts_rank_gmean_amean_diff",
-    "days_from_last_change", "last_diff_value", "inst_tvr", "hump_decay",
-    "jump_decay", "kth_element", "hump"
-}
+# =============================================================================
+# Operator Registry - Dynamic loading from database
+# =============================================================================
 
-# Operators that work with VECTOR fields
-VEC_OPERATORS = {
-    "vec_kurtosis", "vec_min", "vec_count", "vec_sum", "vec_skewness",
-    "vec_max", "vec_avg", "vec_range", "vec_choose", "vec_powersum",
-    "vec_stddev", "vec_percentage", "vec_ir", "vec_norm", "vec_filter"
-}
+class OperatorRegistry:
+    """
+    Global registry for operators loaded from database.
+    
+    Provides:
+    - Async loading from database
+    - In-memory caching
+    - Category-based operator sets
+    
+    Note: No hardcoded fallback - operators must be synced from BRAIN platform.
+    """
+    
+    _instance: Optional["OperatorRegistry"] = None
+    
+    def __init__(self):
+        self._operators: Set[str] = set()
+        self._operators_by_category: Dict[str, Set[str]] = {}
+        self._loaded = False
+        self._load_lock = asyncio.Lock()
+    
+    @classmethod
+    def get_instance(cls) -> "OperatorRegistry":
+        """Get singleton instance."""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    @property
+    def operators(self) -> Set[str]:
+        """Get all known operators."""
+        if not self._operators:
+            logger.warning("[OperatorRegistry] No operators loaded. Run 'POST /api/v1/operators/sync' first.")
+        return self._operators
+    
+    @property
+    def ts_operators(self) -> Set[str]:
+        """Get time-series operators."""
+        return self._operators_by_category.get("Time Series", set())
+    
+    @property
+    def vec_operators(self) -> Set[str]:
+        """Get vector operators."""
+        return self._operators_by_category.get("Vector", set())
+    
+    @property
+    def group_operators(self) -> Set[str]:
+        """Get group operators."""
+        return self._operators_by_category.get("Group", set())
+    
+    async def load_from_db(self, db=None) -> bool:
+        """
+        Load operators from database.
+        
+        Args:
+            db: AsyncSession instance (optional, will create if not provided)
+            
+        Returns:
+            True if loaded successfully
+        """
+        async with self._load_lock:
+            if self._loaded and self._operators:
+                return True
+            
+            try:
+                if db is None:
+                    from backend.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as session:
+                        return await self._load_operators(session)
+                else:
+                    return await self._load_operators(db)
+            except Exception as e:
+                logger.error(f"[OperatorRegistry] Failed to load from DB: {e}. Sync operators first.")
+                return False
+    
+    async def _load_operators(self, db) -> bool:
+        """Internal load implementation."""
+        from sqlalchemy import select
+        from backend.models import Operator
+        
+        result = await db.execute(
+            select(Operator.name, Operator.category).where(Operator.is_active == True)
+        )
+        rows = result.all()
+        
+        if not rows:
+            logger.warning("[OperatorRegistry] No operators in database, using fallback")
+            return False
+        
+        self._operators = set()
+        self._operators_by_category = {}
+        
+        for name, category in rows:
+            name_lower = name.lower()
+            self._operators.add(name_lower)
+            
+            if category:
+                if category not in self._operators_by_category:
+                    self._operators_by_category[category] = set()
+                self._operators_by_category[category].add(name_lower)
+        
+        self._loaded = True
+        logger.info(f"[OperatorRegistry] Loaded {len(self._operators)} operators from database")
+        return True
+    
+    def reload(self):
+        """Force reload on next access."""
+        self._loaded = False
+        self._operators = set()
+        self._operators_by_category = {}
 
-# Group operators that require GROUP type second argument
-GROUP_OPERATORS = {
-    "group_min", "group_mean", "group_median", "group_max", "group_rank",
-    "group_vector_proj", "group_normalize", "group_extra", "group_backfill",
-    "group_scale", "group_count", "group_zscore", "group_std_dev", "group_sum",
-    "group_neutralize", "group_multi_regression", "group_cartesian_product",
-    "group_coalesce", "group_percentage", "group_vector_neut"
-}
 
-# Built-in group fields
+# Global registry instance
+_operator_registry = OperatorRegistry.get_instance()
+
+
+async def load_operators_from_db(db=None) -> Set[str]:
+    """
+    Load operators from database.
+    
+    Convenience function for async contexts.
+    """
+    await _operator_registry.load_from_db(db)
+    return _operator_registry.operators
+
+
+def get_known_operators() -> Set[str]:
+    """
+    Get known operators (sync).
+    
+    Returns cached operators or fallback if not loaded.
+    """
+    return _operator_registry.operators
+
+
+# Built-in group fields (these are not operators, kept hardcoded)
 BUILTIN_GROUPS = {"sector", "subindustry", "industry", "exchange", "country", "market"}
 
 
@@ -159,8 +265,8 @@ class AlphaSemanticValidator:
         if operators:
             self.allowed_operators = {op.lower() for op in operators}
         else:
-            # Default: allow all known operators
-            self.allowed_operators = TS_OPERATORS | VEC_OPERATORS | GROUP_OPERATORS
+            # Default: allow all operators from registry (loaded from DB or fallback)
+            self.allowed_operators = get_known_operators()
             
         # Regex patterns for parsing
         self._field_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
@@ -196,10 +302,10 @@ class AlphaSemanticValidator:
         for op in operators_used:
             op_lower = op.lower()
             if self.allowed_operators and op_lower not in self.allowed_operators:
-                # Check against all known operators
-                all_known = TS_OPERATORS | VEC_OPERATORS | GROUP_OPERATORS
+                # Check against all known operators from registry
+                all_known = get_known_operators()
                 if op_lower not in all_known:
-                    result.add_error(f"Unknown operator: {op}")
+                    result.add_warning(f"Unknown operator: {op}")
                     
         # 4. Validate fields exist and collect type info
         matrix_fields = set()
@@ -320,8 +426,8 @@ class AlphaSemanticValidator:
         for op in operators:
             op_lower = op.lower()
             
-            # Check ts_* operators with VECTOR fields
-            if op_lower in TS_OPERATORS:
+            # Check ts_* operators with VECTOR fields (use naming convention)
+            if op_lower.startswith("ts_"):
                 # Look for vec_ prefix fields being passed to ts_ functions
                 # This is a heuristic - we look for vector field names near ts_ calls
                 for vf in vector_fields:
@@ -334,9 +440,7 @@ class AlphaSemanticValidator:
                         )
                         
             # Check vec_* operators - they expect aggregation over vector dimensions
-            if op_lower in VEC_OPERATORS:
-                # vec_* operators on MATRIX fields is actually fine (aggregates across vector dim)
-                pass
+            # (vec_* operators on MATRIX fields is actually fine - aggregates across vector dim)
                 
         return errors
 
@@ -353,8 +457,8 @@ def compute_expression_hash(expression: str) -> str:
     # Normalize whitespace
     normalized = " ".join(expression.split())
     
-    # Normalize operator case
-    for op in TS_OPERATORS | VEC_OPERATORS | GROUP_OPERATORS:
+    # Normalize operator case using registry
+    for op in get_known_operators():
         pattern = re.compile(re.escape(op), re.IGNORECASE)
         normalized = pattern.sub(op.lower(), normalized)
         

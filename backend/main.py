@@ -19,6 +19,15 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     # Startup: Initialize database
     await init_db()
+    
+    # Load operator registry from database
+    try:
+        from backend.alpha_semantic_validator import load_operators_from_db
+        await load_operators_from_db()
+    except Exception as e:
+        import logging
+        logging.getLogger("main").warning(f"Failed to load operators from DB: {e}")
+    
     yield
     # Shutdown: Cleanup if needed
     pass

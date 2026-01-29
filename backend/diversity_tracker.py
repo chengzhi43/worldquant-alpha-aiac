@@ -183,8 +183,8 @@ class DiversityTracker:
         if self.db and load_history:
             await self._load_historical_attempts(history_days)
         
-        # Load available operators from known list
-        self._load_available_operators()
+        # Load available operators from database
+        await self._load_available_operators()
         
         self._initialized = True
         logger.info(
@@ -234,35 +234,27 @@ class DiversityTracker:
         except Exception as e:
             logger.warning(f"[DiversityTracker] Failed to load history: {e}")
     
-    def _load_available_operators(self):
-        """Load list of available operators."""
-        # Common operators from BRAIN platform
-        self.available_operators = {
-            # Time-series
-            "ts_rank", "ts_zscore", "ts_mean", "ts_sum", "ts_delta", "ts_std_dev",
-            "ts_decay_linear", "ts_decay_exp", "ts_corr", "ts_cov", "ts_max", "ts_min",
-            "ts_argmax", "ts_argmin", "ts_median", "ts_quantile", "ts_skewness",
-            "ts_kurtosis", "ts_ir", "ts_returns", "ts_av_diff", "ts_max_diff",
-            "ts_backfill", "ts_delay",
-            
-            # Cross-sectional
-            "rank", "zscore", "quantile", "normalize",
-            "group_rank", "group_zscore", "group_mean", "group_sum", "group_max",
-            "group_neutralize", "regression_neut",
-            
-            # Vector
-            "vec_sum", "vec_avg", "vec_max", "vec_min", "vec_count", "vec_std_dev",
-            
-            # Arithmetic
-            "log", "sqrt", "abs", "sign", "sigmoid", "tanh", "power", "signed_power",
-            "add", "subtract", "multiply", "divide", "inverse",
-            
-            # Conditional
-            "if_else", "trade_when", "filter",
-            
-            # Utility
-            "pasteurize", "clamp", "densify",
-        }
+    async def _load_available_operators(self):
+        """Load list of available operators from database."""
+        # Try to load from database
+        if self.db:
+            try:
+                from backend.models import Operator
+                result = await self.db.execute(
+                    select(Operator.name).where(Operator.is_active == True)
+                )
+                operators = result.scalars().all()
+                if operators:
+                    self.available_operators = {op.lower() for op in operators}
+                    logger.debug(f"[DiversityTracker] Loaded {len(self.available_operators)} operators from DB")
+                    return
+            except Exception as e:
+                logger.warning(f"[DiversityTracker] Failed to load operators from DB: {e}")
+        
+        # Fallback to semantic validator's registry
+        from backend.alpha_semantic_validator import get_known_operators
+        self.available_operators = get_known_operators()
+        logger.debug(f"[DiversityTracker] Using {len(self.available_operators)} operators from registry")
     
     def _extract_skeleton(self, expression: str) -> str:
         """Extract operator skeleton from expression."""

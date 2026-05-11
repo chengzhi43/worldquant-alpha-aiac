@@ -11,11 +11,13 @@ Contains:
 - node_evaluate: Evaluate alpha quality using multi-objective scoring
 """
 
+import json
 import time
 import random
 from typing import Dict, List, Optional, Tuple
 from loguru import logger
 from langchain_core.runnables import RunnableConfig
+from sqlalchemy import select
 
 from backend.agents.graph.state import MiningState
 from backend.agents.graph.nodes.base import (
@@ -30,6 +32,51 @@ from backend.agents.prompts import (
     quick_alignment_check,
     determine_attribution_heuristic,
 )
+from backend.models.config import SystemConfig
+from backend.database import AsyncSessionLocal
+
+
+async def _load_thresholds_from_db() -> Dict[str, float]:
+    """
+    Load quality thresholds from database SystemConfig.
+    Falls back to env settings if not configured in DB.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            query = select(SystemConfig).where(
+                SystemConfig.config_key == "quality_thresholds"
+            )
+            result = await db.execute(query)
+            config = result.scalar_one_or_none()
+            if config and config.config_value:
+                data = json.loads(config.config_value)
+                return {
+                    "sharpe_min": float(data.get("sharpe_min", settings.SHARPE_MIN)),
+                    "turnover_max": float(data.get("turnover_max", settings.TURNOVER_MAX)),
+                    "fitness_min": float(data.get("fitness_min", settings.FITNESS_MIN)),
+                }
+            # Also check diversity config for max_correlation
+            query2 = select(SystemConfig).where(
+                SystemConfig.config_key == "diversity_thresholds"
+            )
+            result2 = await db.execute(query2)
+            config2 = result2.scalar_one_or_none()
+            max_corr = settings.MAX_CORRELATION
+            if config2 and config2.config_value:
+                data2 = json.loads(config2.config_value)
+                max_corr = float(data2.get("max_correlation", max_corr))
+            return {
+                "sharpe_min": settings.SHARPE_MIN,
+                "turnover_max": settings.TURNOVER_MAX,
+                "fitness_min": settings.FITNESS_MIN,
+            }
+    except Exception:
+        logger.warning("[Evaluate] Failed to load thresholds from DB, using env defaults")
+        return {
+            "sharpe_min": settings.SHARPE_MIN,
+            "turnover_max": settings.TURNOVER_MAX,
+            "fitness_min": settings.FITNESS_MIN,
+        }
 
 
 # =============================================================================
@@ -277,14 +324,19 @@ async def node_evaluate(
     corr_checks_skipped = 0
     
     logger.info(f"[{node_name}] Starting two-stage evaluation | count={len(state.pending_alphas)}")
-    
-    # Thresholds
-    sharpe_min = getattr(settings, 'SHARPE_MIN', 1.5)
-    turnover_max = getattr(settings, 'TURNOVER_MAX', 0.7)
-    fitness_min = getattr(settings, 'FITNESS_MIN', 0.6)
+
+    # Load thresholds from database (fallback to env settings)
+    db_thresholds = await _load_thresholds_from_db()
+    sharpe_min = db_thresholds["sharpe_min"]
+    turnover_max = db_thresholds["turnover_max"]
+    fitness_min = db_thresholds["fitness_min"]
     score_pass_threshold = getattr(settings, 'SCORE_PASS_THRESHOLD', 0.8)
     score_optimize_threshold = getattr(settings, 'SCORE_OPTIMIZE_THRESHOLD', 0.3)
     corr_check_threshold = getattr(settings, 'CORR_CHECK_THRESHOLD', 0.5)
+
+    logger.info(
+        f"[{node_name}] Thresholds: sharpe>={sharpe_min} turnover<={turnover_max} fitness>={fitness_min}"
+    )
     
     eval_details = []
     failure_feedback_queue = []

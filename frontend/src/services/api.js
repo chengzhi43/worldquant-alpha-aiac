@@ -186,8 +186,18 @@ const api = {
     return data
   },
 
+  getThresholds: async () => {
+    const { data } = await client.get('/config/thresholds')
+    return data
+  },
+
   updateThresholds: async (thresholds) => {
     const { data } = await client.put('/config/thresholds', thresholds)
+    return data
+  },
+
+  updateDiversity: async (diversity) => {
+    const { data } = await client.put('/config/diversity', diversity)
     return data
   },
 

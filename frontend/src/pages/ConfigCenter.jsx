@@ -374,6 +374,155 @@ export default function ConfigCenter() {
     )
   }
 
+  // Quality Thresholds tab
+  const ThresholdsTab = () => {
+    const [thresholdForm] = Form.useForm()
+
+    // Load thresholds from backend
+    const { data: thresholdsData, isLoading: thresholdsLoading } = useQuery({
+      queryKey: ['thresholds'],
+      queryFn: api.getThresholds,
+    })
+
+    // Also load diversity config for max_correlation
+    const { data: configData, isLoading: configLoading } = useQuery({
+      queryKey: ['config'],
+      queryFn: api.getConfig,
+    })
+
+    // Set form values when data loads
+    useState(() => {
+      if (thresholdsData && configData) {
+        let diversityConfig = { max_correlation: 0.7 }
+        try {
+          const raw = configData['diversity_thresholds']
+          if (raw) {
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+            diversityConfig = parsed
+          }
+        } catch (e) {
+          // use default
+        }
+        thresholdForm.setFieldsValue({
+          ...thresholdsData,
+          max_correlation: diversityConfig.max_correlation ?? 0.7,
+        })
+      }
+    })
+
+    const saveThresholdsMutation = useMutation({
+      mutationFn: async (values) => {
+        const { max_correlation, ...thresholdValues } = values
+        // Save thresholds
+        await api.updateThresholds(thresholdValues)
+        // Save diversity config (max_correlation) separately
+        await api.updateDiversity({ max_correlation })
+      },
+      onSuccess: () => {
+        message.success('质量阈值保存成功')
+        queryClient.invalidateQueries(['thresholds'])
+        queryClient.invalidateQueries(['config'])
+      },
+      onError: (error) => {
+        message.error(`保存失败: ${error.response?.data?.detail || error.message}`)
+      },
+    })
+
+    const handleSaveThresholds = (values) => {
+      saveThresholdsMutation.mutate(values)
+    }
+
+    if (thresholdsLoading || configLoading) {
+      return <Spin />
+    }
+
+    return (
+      <Card className="glass-card">
+        <Form
+          form={thresholdForm}
+          layout="vertical"
+          style={{ maxWidth: 500 }}
+          onFinish={handleSaveThresholds}
+        >
+          <Form.Item label="最低夏普比率 (Sharpe Ratio)" name="sharpe_min">
+            <Row gutter={16}>
+              <Col span={16}>
+                <Slider
+                  min={0}
+                  max={5}
+                  step={0.1}
+                  marks={{ 0: '0', 1: '1', 1.5: '1.5', 2: '2', 3: '3', 5: '5' }}
+                />
+              </Col>
+              <Col span={8}>
+                <InputNumber min={0} max={5} step={0.1} style={{ width: '100%' }} />
+              </Col>
+            </Row>
+          </Form.Item>
+
+          <Form.Item label="最高换手率 (Turnover)" name="turnover_max">
+            <Row gutter={16}>
+              <Col span={16}>
+                <Slider
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  marks={{ 0: '0', 0.5: '0.5', 1: '1', 1.5: '1.5', 2: '2' }}
+                />
+              </Col>
+              <Col span={8}>
+                <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
+              </Col>
+            </Row>
+          </Form.Item>
+
+          <Form.Item label="最低适应度 (Fitness)" name="fitness_min">
+            <Row gutter={16}>
+              <Col span={16}>
+                <Slider
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  marks={{ 0: '0', 0.5: '0.5', 1: '1' }}
+                />
+              </Col>
+              <Col span={8}>
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} />
+              </Col>
+            </Row>
+          </Form.Item>
+
+          <Form.Item label="最大相关性 (多样性)" name="max_correlation">
+            <Row gutter={16}>
+              <Col span={16}>
+                <Slider
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  marks={{ 0: '0', 0.5: '0.5', 0.7: '0.7', 1: '1' }}
+                />
+              </Col>
+              <Col span={8}>
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} />
+              </Col>
+            </Row>
+          </Form.Item>
+
+          <Form.Item>
+            <Button
+              type="primary"
+              htmlType="submit"
+              icon={<SaveOutlined />}
+              loading={saveThresholdsMutation.isPending}
+            >
+              保存设置
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+    )
+  }
+
   const tabs = [
     {
       key: 'credentials',
@@ -388,85 +537,7 @@ export default function ConfigCenter() {
     {
       key: 'thresholds',
       label: '质量阈值',
-      children: (
-        <Card className="glass-card">
-          <Form layout="vertical" style={{ maxWidth: 500 }}>
-            <Form.Item label="最低夏普比率 (Sharpe Ratio)">
-              <Row gutter={16}>
-                <Col span={16}>
-                  <Slider 
-                    min={0} 
-                    max={5} 
-                    step={0.1} 
-                    defaultValue={1.5}
-                    marks={{ 0: '0', 1: '1', 1.5: '1.5', 2: '2', 3: '3', 5: '5' }}
-                  />
-                </Col>
-                <Col span={8}>
-                  <InputNumber min={0} max={5} step={0.1} defaultValue={1.5} style={{ width: '100%' }} />
-                </Col>
-              </Row>
-            </Form.Item>
-
-            <Form.Item label="最高换手率 (Turnover)">
-              <Row gutter={16}>
-                <Col span={16}>
-                  <Slider 
-                    min={0} 
-                    max={2} 
-                    step={0.1} 
-                    defaultValue={0.7}
-                    marks={{ 0: '0', 0.5: '0.5', 1: '1', 1.5: '1.5', 2: '2' }}
-                  />
-                </Col>
-                <Col span={8}>
-                  <InputNumber min={0} max={2} step={0.1} defaultValue={0.7} style={{ width: '100%' }} />
-                </Col>
-              </Row>
-            </Form.Item>
-
-            <Form.Item label="最低适应度 (Fitness)">
-              <Row gutter={16}>
-                <Col span={16}>
-                  <Slider 
-                    min={0} 
-                    max={1} 
-                    step={0.05} 
-                    defaultValue={0.6}
-                    marks={{ 0: '0', 0.5: '0.5', 1: '1' }}
-                  />
-                </Col>
-                <Col span={8}>
-                  <InputNumber min={0} max={1} step={0.05} defaultValue={0.6} style={{ width: '100%' }} />
-                </Col>
-              </Row>
-            </Form.Item>
-
-            <Form.Item label="最大相关性 (多样性)">
-              <Row gutter={16}>
-                <Col span={16}>
-                  <Slider 
-                    min={0} 
-                    max={1} 
-                    step={0.05} 
-                    defaultValue={0.7}
-                    marks={{ 0: '0', 0.5: '0.5', 0.7: '0.7', 1: '1' }}
-                  />
-                </Col>
-                <Col span={8}>
-                  <InputNumber min={0} max={1} step={0.05} defaultValue={0.7} style={{ width: '100%' }} />
-                </Col>
-              </Row>
-            </Form.Item>
-
-            <Form.Item>
-              <Button type="primary" icon={<SaveOutlined />}>
-                保存设置
-              </Button>
-            </Form.Item>
-          </Form>
-        </Card>
-      ),
+      children: <ThresholdsTab />,
     },
     {
       key: 'operators',

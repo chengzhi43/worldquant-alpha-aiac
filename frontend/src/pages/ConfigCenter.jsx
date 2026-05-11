@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   Row, 
@@ -391,7 +391,7 @@ export default function ConfigCenter() {
     })
 
     // Set form values when data loads
-    useState(() => {
+    useEffect(() => {
       if (thresholdsData && configData) {
         let diversityConfig = { max_correlation: 0.7 }
         try {
@@ -408,7 +408,7 @@ export default function ConfigCenter() {
           max_correlation: diversityConfig.max_correlation ?? 0.7,
         })
       }
-    })
+    }, [thresholdsData, configData])
 
     const saveThresholdsMutation = useMutation({
       mutationFn: async (values) => {
@@ -436,6 +436,18 @@ export default function ConfigCenter() {
       return <Spin />
     }
 
+    // Slider+InputNumber 组合组件，作为 Form.Item 的直接子组件以正确接收 value/onChange
+    const SliderInput = ({ value, onChange, min, max, step, marks }) => (
+      <Row gutter={16}>
+        <Col span={16}>
+          <Slider min={min} max={max} step={step} marks={marks} value={value} onChange={onChange} />
+        </Col>
+        <Col span={8}>
+          <InputNumber min={min} max={max} step={step} value={value} onChange={onChange} style={{ width: '100%' }} />
+        </Col>
+      </Row>
+    )
+
     return (
       <Card className="glass-card">
         <Form
@@ -443,69 +455,27 @@ export default function ConfigCenter() {
           layout="vertical"
           style={{ maxWidth: 500 }}
           onFinish={handleSaveThresholds}
+          initialValues={{
+            sharpe_min: 1.5,
+            turnover_max: 0.7,
+            fitness_min: 0.6,
+            max_correlation: 0.7,
+          }}
         >
           <Form.Item label="最低夏普比率 (Sharpe Ratio)" name="sharpe_min">
-            <Row gutter={16}>
-              <Col span={16}>
-                <Slider
-                  min={0}
-                  max={5}
-                  step={0.1}
-                  marks={{ 0: '0', 1: '1', 1.5: '1.5', 2: '2', 3: '3', 5: '5' }}
-                />
-              </Col>
-              <Col span={8}>
-                <InputNumber min={0} max={5} step={0.1} style={{ width: '100%' }} />
-              </Col>
-            </Row>
+            <SliderInput min={0} max={5} step={0.1} marks={{ 0: '0', 1: '1', 1.5: '1.5', 2: '2', 3: '3', 5: '5' }} />
           </Form.Item>
 
           <Form.Item label="最高换手率 (Turnover)" name="turnover_max">
-            <Row gutter={16}>
-              <Col span={16}>
-                <Slider
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  marks={{ 0: '0', 0.5: '0.5', 1: '1', 1.5: '1.5', 2: '2' }}
-                />
-              </Col>
-              <Col span={8}>
-                <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
-              </Col>
-            </Row>
+            <SliderInput min={0} max={2} step={0.1} marks={{ 0: '0', 0.5: '0.5', 1: '1', 1.5: '1.5', 2: '2' }} />
           </Form.Item>
 
           <Form.Item label="最低适应度 (Fitness)" name="fitness_min">
-            <Row gutter={16}>
-              <Col span={16}>
-                <Slider
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  marks={{ 0: '0', 0.5: '0.5', 1: '1' }}
-                />
-              </Col>
-              <Col span={8}>
-                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} />
-              </Col>
-            </Row>
+            <SliderInput min={0} max={1} step={0.05} marks={{ 0: '0', 0.5: '0.5', 1: '1' }} />
           </Form.Item>
 
           <Form.Item label="最大相关性 (多样性)" name="max_correlation">
-            <Row gutter={16}>
-              <Col span={16}>
-                <Slider
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  marks={{ 0: '0', 0.5: '0.5', 0.7: '0.7', 1: '1' }}
-                />
-              </Col>
-              <Col span={8}>
-                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} />
-              </Col>
-            </Row>
+            <SliderInput min={0} max={1} step={0.05} marks={{ 0: '0', 0.5: '0.5', 0.7: '0.7', 1: '1' }} />
           </Form.Item>
 
           <Form.Item>

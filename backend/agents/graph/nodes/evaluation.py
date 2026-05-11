@@ -109,28 +109,50 @@ async def node_simulate(
         logger.warning(f"[{node_name}] All expressions already in DB")
         return {"pending_alphas": state.pending_alphas}
     
-    logger.info(f"[{node_name}] Starting batch simulation | count={len(indices_to_simulate)} region={state.region}")
-    
+    # Check if batch simulation is enabled (task config or default to True)
+    task_config = config.get("configurable", {}).get("task_config", {}) if config else {}
+    use_batch = task_config.get("use_batch_simulation", True)
+
+    logger.info(
+        f"[{node_name}] Starting {'batch' if use_batch else 'single'} simulation | "
+        f"count={len(indices_to_simulate)} region={state.region}"
+    )
+
     expressions = [state.pending_alphas[i].expression for i in indices_to_simulate]
-    
+
     _debug_log("E", "nodes.py:simulate:expressions", "Expressions to simulate", {
         "count": len(expressions),
         "expressions": [e[:150] for e in expressions],
         "region": state.region,
-        "universe": state.universe
+        "universe": state.universe,
+        "use_batch": use_batch,
     })
-    
+
     try:
-        results = await brain.simulate_batch(
-            expressions=expressions,
-            region=state.region,
-            universe=state.universe,
-            delay=1,
-            decay=4,
-            neutralization="SUBINDUSTRY"
-        )
+        if use_batch:
+            results = await brain.simulate_batch(
+                expressions=expressions,
+                region=state.region,
+                universe=state.universe,
+                delay=1,
+                decay=4,
+                neutralization="SUBINDUSTRY"
+            )
+        else:
+            # Simulate one by one for accounts without batch permission
+            results = []
+            for expr in expressions:
+                result = await brain.simulate_alpha(
+                    expression=expr,
+                    region=state.region,
+                    universe=state.universe,
+                    delay=1,
+                    decay=4,
+                    neutralization="SUBINDUSTRY"
+                )
+                results.append(result)
     except Exception as e:
-        logger.error(f"[{node_name}] Batch Simulate Loop Error: {e}")
+        logger.error(f"[{node_name}] Simulate Loop Error: {e}")
         results = [{"success": False, "error": str(e)} for _ in expressions]
     
     duration_ms = int((time.time() - start_time) * 1000)
@@ -373,8 +395,8 @@ async def node_evaluate(
         should_opt, opt_reason = should_optimize(sim_result)
         failed_tests = get_failed_tests(sim_result)
         
-        # Determine quality status
-        if meets_thresholds or score >= score_pass_threshold:
+        # Determine quality status (only threshold check, no score bypass)
+        if meets_thresholds:
             alpha.quality_status = "PASS"
             pass_count += 1
         elif should_opt and score >= score_optimize_threshold:

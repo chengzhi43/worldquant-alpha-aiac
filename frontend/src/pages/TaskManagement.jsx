@@ -1,20 +1,21 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { 
-  Row, 
-  Col, 
-  Card, 
-  Table, 
-  Button, 
-  Tag, 
-  Space, 
+import {
+  Row,
+  Col,
+  Card,
+  Table,
+  Button,
+  Tag,
+  Space,
   Typography,
   Modal,
   Form,
   Input,
   Select,
   InputNumber,
+  Switch,
   message,
 } from 'antd'
 import {
@@ -102,6 +103,11 @@ export default function TaskManagement() {
       payload.target_datasets = [payload.target_dataset_id]
       delete payload.target_dataset_id
     }
+    // Extract use_batch_simulation into the config field
+    payload.config = {
+      use_batch_simulation: payload.use_batch_simulation,
+    }
+    delete payload.use_batch_simulation
     createTaskMutation.mutate(payload)
   }
 
@@ -263,6 +269,7 @@ export default function TaskManagement() {
             agent_mode: 'AUTONOMOUS',
             daily_goal: 4,
             max_iterations: 10,
+            use_batch_simulation: true,
           }}
         >
           <Form.Item
@@ -333,6 +340,14 @@ export default function TaskManagement() {
             <Col span={12}>
               <Form.Item name="max_iterations" label="最大迭代次数">
                 <InputNumber min={1} max={100} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="use_batch_simulation" label="批量模拟" valuePropName="checked">
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
               </Form.Item>
             </Col>
           </Row>

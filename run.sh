@@ -184,8 +184,8 @@ except:
     echo "[INFO] Starting Frontend..."
     cd frontend && npm run dev &
     echo $! > "$PID_DIR/frontend.pid"
-    cd ..
-    
+    # Note: cd frontend runs in a subshell due to &, so we're still in the project root
+
     echo "[INFO] Starting Celery Worker..."
     source venv/bin/activate
     celery -A backend.celery_app worker --loglevel=info &

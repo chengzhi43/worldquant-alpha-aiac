@@ -106,7 +106,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                                 operators=operators,
                                 max_iterations=10,
                                 target_alphas=remaining_goal,
-                                num_alphas_per_round=4,
+                                num_alphas_per_round=4,  # 每次生成并提交到BRAIN模拟的Alpha数量
                                 run_id=run.id
                             )
                             

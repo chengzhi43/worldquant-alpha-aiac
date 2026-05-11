@@ -134,6 +134,7 @@ class MiningAgent:
         
         try:
             # Run workflow with strategy context
+            task_config = task.config or {}
             result = await self._workflow.run_with_persistence(
                 task=task,
                 dataset_id=dataset_id,
@@ -145,6 +146,7 @@ class MiningAgent:
                         "trace_service": trace_service,
                         "strategy": strategy.to_dict(),  # Pass strategy to all nodes
                         "run_id": run_id,
+                        "task_config": task_config,  # Pass task config (e.g. use_batch_simulation)
                     }
                 }
             )
@@ -238,7 +240,7 @@ class MiningAgent:
         operators: List[Dict],
         max_iterations: int = 10,
         target_alphas: int = 4,
-        num_alphas_per_round: int = 4,
+        num_alphas_per_round: int = 4,  # 每次生成并提交到BRAIN模拟的Alpha数量
         initial_strategy: Optional[EvolutionStrategy] = None,
         run_id: Optional[int] = None,
     ) -> Dict[str, Any]:

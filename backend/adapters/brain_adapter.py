@@ -452,29 +452,44 @@ class BrainAdapter:
             return {"success": False, "error": "No children in multi-simulation"}
         
         # Fetch results for each child
-        async def fetch_child_result(child_id):
-            try:
-                # Fetch child simulation to get alpha ID
-                child_url = f"{self.BASE_URL}/simulations/{child_id}"
-                child_resp = await self.client.get(child_url)
-                
-                if child_resp.status_code != 200:
-                    logger.error(f"Failed to fetch child sim {child_id}: {child_resp.status_code}")
-                    return {"success": False, "error": f"Failed to fetch child {child_id}"}
-                
-                child_data = child_resp.json()
-                alpha_id = child_data.get("alpha")
-                
-                if not alpha_id:
-                    logger.warning(f"Child simulation {child_id} has no alpha: {child_data}")
-                    return {"success": False, "error": f"No alpha in child {child_id}"}
-                
-                # Fetch full alpha details
-                return await self._get_completed_alpha_details(alpha_id)
-                
-            except Exception as e:
-                logger.error(f"Error fetching child {child_id}: {e}")
-                return {"success": False, "error": str(e)}
+        async def fetch_child_result(child_id, max_retries=5):
+            last_error = ""
+            for attempt in range(1, max_retries + 1):
+                try:
+                    child_url = f"{self.BASE_URL}/simulations/{child_id}"
+                    child_resp = await self.client.get(child_url)
+
+                    if child_resp.status_code != 200:
+                        last_error = f"Failed to fetch child {child_id}"
+                        logger.warning(f"Fetch child sim {child_id} failed (attempt {attempt}/{max_retries}): {child_resp.status_code}")
+                        if attempt < max_retries:
+                            await asyncio.sleep(15)
+                            continue
+                        return {"success": False, "error": last_error}
+
+                    child_data = child_resp.json()
+                    alpha_id = child_data.get("alpha")
+
+                    if not alpha_id:
+                        last_error = f"No alpha in child {child_id}"
+                        logger.warning(f"Child {child_id} not ready yet (attempt {attempt}/{max_retries}), retrying...")
+                        if attempt < max_retries:
+                            await asyncio.sleep(15)
+                            continue
+                        return {"success": False, "error": last_error}
+
+                    # Alpha found, fetch full details
+                    return await self._get_completed_alpha_details(alpha_id)
+
+                except Exception as e:
+                    last_error = str(e)
+                    logger.error(f"Error fetching child {child_id} (attempt {attempt}/{max_retries}): {e}")
+                    if attempt < max_retries:
+                        await asyncio.sleep(15)
+                        continue
+                    return {"success": False, "error": last_error}
+
+            return {"success": False, "error": last_error}
         
         # Fetch all children (parallel)
         results = await asyncio.gather(*(fetch_child_result(cid) for cid in children))

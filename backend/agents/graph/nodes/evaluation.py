@@ -115,23 +115,32 @@ async def node_simulate(
     
     if not valid_indices:
         logger.warning(f"[{node_name}] No valid alphas to simulate")
-        return {}
-    
+        trace_update = await record_trace(
+            state, trace_service, node_name,
+            {"count": 0, "reason": "no_valid_alphas"},
+            {"success_count": 0, "simulated_count": 0, "results": []},
+            0, "SKIPPED"
+        )
+        return {
+            "pending_alphas": state.pending_alphas,
+            **trace_update
+        }
+
     # DB-level deduplication check
     db_duplicates = 0
     indices_to_simulate = []
-    
+
     try:
         from backend.database import AsyncSessionLocal
         from backend.selection_strategy import filter_unsimulated_expressions
-        
+
         expressions_to_check = [state.pending_alphas[i].expression for i in valid_indices]
-        
+
         async with AsyncSessionLocal() as db:
             new_exprs, dup_exprs = await filter_unsimulated_expressions(
                 db, expressions_to_check, state.region, state.universe
             )
-        
+
         new_expr_set = set(new_exprs)
         for idx in valid_indices:
             expr = state.pending_alphas[idx].expression
@@ -142,20 +151,29 @@ async def node_simulate(
                 state.pending_alphas[idx].simulation_error = "DB duplicate: already simulated"
                 state.pending_alphas[idx].is_simulated = True
                 state.pending_alphas[idx].simulation_success = False
-        
+
         logger.info(
             f"[{node_name}] DB dedup: {db_duplicates} duplicates skipped, "
             f"{len(indices_to_simulate)} to simulate"
         )
-        
+
     except Exception as e:
         logger.warning(f"[{node_name}] DB dedup check failed, proceeding with all: {e}")
         indices_to_simulate = valid_indices
-    
+
     if not indices_to_simulate:
         logger.warning(f"[{node_name}] All expressions already in DB")
-        return {"pending_alphas": state.pending_alphas}
-    
+        trace_update = await record_trace(
+            state, trace_service, node_name,
+            {"count": len(valid_indices), "reason": "all_duplicates"},
+            {"success_count": 0, "simulated_count": 0, "results": [], "db_duplicates": db_duplicates},
+            0, "SKIPPED"
+        )
+        return {
+            "pending_alphas": state.pending_alphas,
+            **trace_update
+        }
+
     # Check if batch simulation is enabled (task config or default to True)
     task_config = config.get("configurable", {}).get("task_config", {}) if config else {}
     use_batch = task_config.get("use_batch_simulation", True)

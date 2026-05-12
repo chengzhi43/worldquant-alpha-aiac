@@ -32,6 +32,7 @@ import {
   ExperimentOutlined,
   SyncOutlined,
   ReloadOutlined,
+  MinusCircleOutlined,
 } from '@ant-design/icons'
 import api from '../services/api'
 
@@ -272,6 +273,8 @@ export default function TaskDetail() {
         return <CloseCircleOutlined style={{ color: '#ff4757' }} />
       case 'RUNNING':
         return <LoadingOutlined style={{ color: '#00d4ff' }} spin />
+      case 'SKIPPED':
+        return <MinusCircleOutlined style={{ color: '#faad14' }} />
       default:
         return null
     }
@@ -696,34 +699,48 @@ export default function TaskDetail() {
                                )}
 
                                {/* SIMULATE: Show Results with Metrics */}
-                               {step.step_type === 'SIMULATE' && step.output_data?.results && (
+                               {step.step_type === 'SIMULATE' && (
                                  <div style={{ marginTop: 8 }}>
-                                   <Text type="secondary" style={{ fontSize: 12 }}>
-                                     模拟结果: {step.output_data.success_count || 0} 成功 / {step.output_data.simulated_count || 0} 总提交
-                                     {step.output_data.db_duplicates > 0 && ` (${step.output_data.db_duplicates} 重复跳过)`}
-                                   </Text>
-                                   {step.output_data.results.map((r, i) => (
-                                     <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-                                       <Tag color={r.success ? 'green' : (r.err ? 'red' : 'orange')} style={{ fontSize: 11 }}>
-                                         {r.id || `#${i+1}`}
-                                       </Tag>
-                                       {r.expression && (
-                                         <Text code style={{ fontSize: 10, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.expression}</Text>
-                                       )}
-                                       {r.metrics && (
-                                         <Space size="small" wrap>
-                                           <Tag color={r.metrics.sharpe >= 1.2 ? 'green' : (r.metrics.sharpe >= 0 ? 'orange' : 'red')}>
-                                             Sharpe: {r.metrics.sharpe?.toFixed(2) ?? '--'}
+                                   {step.status === 'SKIPPED' ? (
+                                     <Text type="warning" style={{ fontSize: 12 }}>
+                                       ⏭ 跳过模拟：{step.input_data?.reason === 'no_valid_alphas' ? '无有效 Alpha' : step.input_data?.reason === 'all_duplicates' ? '全部为重复表达式' : ''}
+                                     </Text>
+                                   ) : step.status === 'RUNNING' ? (
+                                     <Text type="secondary" style={{ fontSize: 12 }}>
+                                       <LoadingOutlined spin /> 正在提交到 BRAIN 模拟...
+                                     </Text>
+                                   ) : step.output_data?.results && step.output_data.results.length > 0 ? (
+                                     <>
+                                       <Text type="secondary" style={{ fontSize: 12 }}>
+                                         模拟结果: {step.output_data.success_count || 0} 成功 / {step.output_data.simulated_count || 0} 总提交
+                                         {step.output_data.db_duplicates > 0 && ` (${step.output_data.db_duplicates} 重复跳过)`}
+                                       </Text>
+                                       {step.output_data.results.map((r, i) => (
+                                         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                                           <Tag color={r.success ? 'green' : (r.err ? 'red' : 'orange')} style={{ fontSize: 11 }}>
+                                             {r.id || `#${i+1}`}
                                            </Tag>
-                                           <Tag>Returns: {(r.metrics.returns * 100)?.toFixed(1) ?? '--'}%</Tag>
-                                           <Tag>Turnover: {r.metrics.turnover?.toFixed(2) ?? '--'}</Tag>
-                                           <Tag>Fitness: {r.metrics.fitness?.toFixed(2) ?? '--'}</Tag>
-                                         </Space>
-                                       )}
-                                       {r.err && <Text type="danger" style={{ fontSize: 11 }}>{r.err}</Text>}
-                                       {!r.err && !r.success && <Text type="warning" style={{ fontSize: 11, color: '#faad14' }}>模拟未完成</Text>}
-                                     </div>
-                                   ))}
+                                           {r.expression && (
+                                             <Text code style={{ fontSize: 10, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.expression}</Text>
+                                           )}
+                                           {r.metrics && (
+                                             <Space size="small" wrap>
+                                               <Tag color={r.metrics.sharpe >= 1.2 ? 'green' : (r.metrics.sharpe >= 0 ? 'orange' : 'red')}>
+                                                 Sharpe: {r.metrics.sharpe?.toFixed(2) ?? '--'}
+                                               </Tag>
+                                               <Tag>Returns: {(r.metrics.returns * 100)?.toFixed(1) ?? '--'}%</Tag>
+                                               <Tag>Turnover: {r.metrics.turnover?.toFixed(2) ?? '--'}</Tag>
+                                               <Tag>Fitness: {r.metrics.fitness?.toFixed(2) ?? '--'}</Tag>
+                                             </Space>
+                                           )}
+                                           {r.err && <Text type="danger" style={{ fontSize: 11 }}>{r.err}</Text>}
+                                           {!r.err && !r.success && <Text type="warning" style={{ fontSize: 11, color: '#faad14' }}>模拟未完成</Text>}
+                                         </div>
+                                       ))}
+                                     </>
+                                   ) : (
+                                     <Text type="secondary" style={{ fontSize: 12 }}>无模拟结果</Text>
+                                   )}
                                  </div>
                                )}
 

@@ -84,6 +84,7 @@ class TraceStepResponse(BaseModel):
 class TaskDetailResponse(TaskResponse):
     trace_steps: List[TraceStepResponse] = []
     alphas_count: int = 0
+    config: dict = {}
 
 
 class ExperimentRunResponse(BaseModel):
@@ -200,6 +201,7 @@ async def get_task(
         max_iterations=detail.max_iterations,
         created_at=detail.created_at,
         updated_at=detail.updated_at,
+        config=detail.config or {},
         trace_steps=[
             TraceStepResponse(
                 id=s.id,

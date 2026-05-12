@@ -101,41 +101,39 @@ export default function TaskDetail() {
   const runAlphas = React.useMemo(() => runAlphasResp?.items || [], [runAlphasResp])
 
   const runAlphaSummary = React.useMemo(() => {
-    const counts = { PASS: 0, OPTIMIZE: 0, FAIL: 0, OTHER: 0 }
-    const scores = []
-    const sharpes = []
+    try {
+      const counts = { PASS: 0, OPTIMIZE: 0, FAIL: 0, OTHER: 0 }
+      const scores = []
+      const sharpes = []
 
-    for (const a of runAlphas) {
-      const status = a.quality_status || 'OTHER'
-      if (status === 'PASS') counts.PASS += 1
-      else if (status === 'OPTIMIZE') counts.OPTIMIZE += 1
-      else if (status === 'FAIL') counts.FAIL += 1
-      else counts.OTHER += 1
+      for (const a of runAlphas) {
+        const status = a.quality_status || 'OTHER'
+        if (status === 'PASS') counts.PASS += 1
+        else if (status === 'OPTIMIZE') counts.OPTIMIZE += 1
+        else if (status === 'FAIL') counts.FAIL += 1
+        else counts.OTHER += 1
 
-      const s = a.metrics?._score
-      if (typeof s === 'number') scores.push(s)
+        const s = a.metrics?._score
+        if (typeof s === 'number') scores.push(s)
 
-      const sh = a.metrics?.sharpe
-      if (typeof sh === 'number') sharpes.push(sh)
-    }
+        const sh = a.metrics?.sharpe
+        if (typeof sh === 'number') sharpes.push(sh)
+      }
 
-    const avgScore = scores.length ? scores.reduce((x, y) => x + y, 0) / scores.length : null
-    const bestScore = scores.length ? Math.max(...scores) : null
-    const avgSharpe = sharpes.length ? sharpes.reduce((x, y) => x + y, 0) / sharpes.length : null
-    const bestSharpe = sharpes.length ? Math.max(...sharpes) : null
+      const avgScore = scores.length ? scores.reduce((x, y) => x + y, 0) / scores.length : null
+      const bestScore = scores.length ? Math.max(...scores) : null
+      const avgSharpe = sharpes.length ? sharpes.reduce((x, y) => x + y, 0) / sharpes.length : null
+      const bestSharpe = sharpes.length ? Math.max(...sharpes) : null
 
-    const top = [...runAlphas]
-      .filter(a => typeof a.metrics?._score === 'number')
-      .sort((a, b) => (b.metrics?._score ?? -Infinity) - (a.metrics?._score ?? -Infinity))
-      .slice(0, 8)
+      const top = [...runAlphas]
+        .filter(a => typeof a.metrics?._score === 'number')
+        .sort((a, b) => (b.metrics?._score ?? -Infinity) - (a.metrics?._score ?? -Infinity))
+        .slice(0, 8)
 
-    return {
-      counts,
-      avgScore,
-      bestScore,
-      avgSharpe,
-      bestSharpe,
-      top,
+      return { counts, avgScore, bestScore, avgSharpe, bestSharpe, top }
+    } catch (e) {
+      console.error('[TaskDetail] runAlphaSummary error:', e)
+      return { counts: { PASS: 0, OPTIMIZE: 0, FAIL: 0, OTHER: 0 }, top: [] }
     }
   }, [runAlphas])
 
@@ -174,50 +172,55 @@ export default function TaskDetail() {
   
   // Sort and group steps by iteration (consolidate all steps of same iteration)
   const groupedSteps = React.useMemo(() => {
-    const traceSteps = runTrace || task?.trace_steps
-    if (!traceSteps) return {}
-    
-    // Sort steps by created_at or id first
-    const sortedSteps = [...traceSteps].sort((a, b) => {
-      return (a.id || 0) - (b.id || 0)
-    })
-    
-    // First pass: group by iteration only
-    const iterGroups = {}
-    sortedSteps.forEach(step => {
-      const iter = step.iteration || 1
-      if (!iterGroups[iter]) {
-        iterGroups[iter] = {
-          steps: [],
-          iteration: iter,
-          dataset_ids: new Set(),
-          firstCreatedAt: step.created_at
+    try {
+      const traceSteps = runTrace || task?.trace_steps
+      if (!traceSteps) return {}
+
+      // Sort steps by created_at or id first
+      const sortedSteps = [...traceSteps].sort((a, b) => {
+        return (a.id || 0) - (b.id || 0)
+      })
+
+      // First pass: group by iteration only
+      const iterGroups = {}
+      sortedSteps.forEach(step => {
+        const iter = step.iteration || 1
+        if (!iterGroups[iter]) {
+          iterGroups[iter] = {
+            steps: [],
+            iteration: iter,
+            dataset_ids: new Set(),
+            firstCreatedAt: step.created_at
+          }
         }
-      }
-      iterGroups[iter].steps.push(step)
-      // Collect all dataset_ids from this iteration
-      const datasetId = step.input_data?.dataset_id
-      if (datasetId) {
-        iterGroups[iter].dataset_ids.add(datasetId)
-      }
-    })
-    
-    // Convert to final format with string key
-    const groups = {}
-    Object.entries(iterGroups).forEach(([iter, group]) => {
-      // Use dataset_ids as array, or null if none
-      const datasetIds = Array.from(group.dataset_ids)
-      const displayDatasetId = datasetIds.length > 0 ? datasetIds.join(', ') : null
-      
-      groups[iter] = {
-        steps: group.steps.sort((a, b) => (a.step_order || 0) - (b.step_order || 0)),
-        iteration: parseInt(iter),
-        dataset_id: displayDatasetId,
-        firstCreatedAt: group.firstCreatedAt
-      }
-    })
-    
-    return groups
+        iterGroups[iter].steps.push(step)
+        // Collect all dataset_ids from this iteration
+        const datasetId = step.input_data?.dataset_id
+        if (datasetId) {
+          iterGroups[iter].dataset_ids.add(datasetId)
+        }
+      })
+
+      // Convert to final format with string key
+      const groups = {}
+      Object.entries(iterGroups).forEach(([iter, group]) => {
+        // Use dataset_ids as array, or null if none
+        const datasetIds = Array.from(group.dataset_ids)
+        const displayDatasetId = datasetIds.length > 0 ? datasetIds.join(', ') : null
+
+        groups[iter] = {
+          steps: group.steps.sort((a, b) => (a.step_order || 0) - (b.step_order || 0)),
+          iteration: parseInt(iter),
+          dataset_id: displayDatasetId,
+          firstCreatedAt: group.firstCreatedAt
+        }
+      })
+
+      return groups
+    } catch (e) {
+      console.error('[TaskDetail] groupedSteps error:', e)
+      return {}
+    }
   }, [runTrace, task?.trace_steps])
 
   // Get group keys sorted by firstCreatedAt descending (latest first)
@@ -688,7 +691,7 @@ export default function TaskDetail() {
                                          <div style={{ width: '100%', marginTop: 4 }}>
                                            {step.output_data.failures.slice(0, 3).map((f, i) => (
                                              <Text key={i} type="danger" style={{ fontSize: 11, display: 'block' }}>
-                                               {f}
+                                               <>{f.expression && <Text code style={{ fontSize: 10 }}>{f.expression}</Text>} {f.error}</>
                                              </Text>
                                            ))}
                                          </div>

@@ -208,14 +208,15 @@ class TaskService(BaseService):
         if not task:
             return None
         
-        # Get trace steps
+        # Get trace steps (limit to latest 50 to avoid response bloat)
         steps_query = (
             select(TraceStep)
             .where(TraceStep.task_id == task_id)
-            .order_by(TraceStep.step_order)
+            .order_by(TraceStep.id.desc())
+            .limit(50)
         )
         steps_result = await self.db.execute(steps_query)
-        steps = steps_result.scalars().all()
+        steps = list(reversed(steps_result.scalars().all()))
         
         # Count alphas
         alphas_count = await self.alpha_repo.count_by({"task_id": task_id})

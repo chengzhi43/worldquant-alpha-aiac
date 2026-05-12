@@ -642,46 +642,56 @@ export default function TaskDetail() {
                                )}
                                
                                {/* CODE_GEN: Show expressions */}
-                               {step.step_type === 'CODE_GEN' && step.output_data?.expressions && (
+                               {step.step_type === 'CODE_GEN' && (
                                  <div style={{ marginTop: 8 }}>
-                                    {step.output_data.expressions.map((expr, i) => (
-                                      <pre key={i} style={{ 
-                                        fontSize: 11, 
-                                        background: '#1f1f1f', 
-                                        padding: 4, 
-                                        borderRadius: 4,
-                                        marginBottom: 4,
-                                        overflowX: 'auto'
-                                      }}>
-                                        {expr}
-                                      </pre>
-                                    ))}
+                                   {step.output_data?.expressions && step.output_data.expressions.length > 0 ? (
+                                     step.output_data.expressions.map((expr, i) => (
+                                       <pre key={i} style={{
+                                         fontSize: 11,
+                                         background: '#1f1f1f',
+                                         padding: 4,
+                                         borderRadius: 4,
+                                         marginBottom: 4,
+                                         overflowX: 'auto'
+                                       }}>
+                                         {expr}
+                                       </pre>
+                                     ))
+                                   ) : (
+                                     <Text type={step.status === 'FAILED' ? 'danger' : 'warning'} style={{ fontSize: 12 }}>
+                                       {step.status === 'FAILED' ? `LLM 生成失败: ${step.error_message || '未知错误'}` : '未生成 Alpha 表达式'}
+                                     </Text>
+                                   )}
                                  </div>
                                )}
-                               
+
                                {/* VALIDATE: Show validation results */}
                                {step.step_type === 'VALIDATE' && (
                                  <div style={{ marginTop: 8 }}>
-                                   <Space wrap>
-                                     <Tag color={step.output_data?.valid_count > 0 ? 'green' : 'default'}>
-                                       ✅ 有效: {step.output_data?.valid_count ?? 0}
-                                     </Tag>
-                                     <Tag color={step.output_data?.invalid_count > 0 ? 'red' : 'default'}>
-                                       ❌ 无效: {step.output_data?.invalid_count ?? 0}
-                                     </Tag>
-                                     {step.output_data?.duplicate_count > 0 && (
-                                       <Tag color="orange">🔄 重复跳过: {step.output_data.duplicate_count}</Tag>
-                                     )}
-                                     {step.output_data?.failures?.length > 0 && (
-                                       <div style={{ width: '100%', marginTop: 4 }}>
-                                         {step.output_data.failures.slice(0, 3).map((f, i) => (
-                                           <Text key={i} type="danger" style={{ fontSize: 11, display: 'block' }}>
-                                             {f}
-                                           </Text>
-                                         ))}
-                                       </div>
-                                     )}
-                                   </Space>
+                                   {step.output_data?.valid_count === 0 && step.output_data?.invalid_count === 0 ? (
+                                     <Text type="warning" style={{ fontSize: 12 }}>无 Alpha 可验证（上一轮未生成表达式）</Text>
+                                   ) : (
+                                     <Space wrap>
+                                       <Tag color={step.output_data?.valid_count > 0 ? 'green' : 'default'}>
+                                         ✅ 有效: {step.output_data?.valid_count ?? 0}
+                                       </Tag>
+                                       <Tag color={step.output_data?.invalid_count > 0 ? 'red' : 'default'}>
+                                         ❌ 无效: {step.output_data?.invalid_count ?? 0}
+                                       </Tag>
+                                       {step.output_data?.duplicate_count > 0 && (
+                                         <Tag color="orange">🔄 重复跳过: {step.output_data.duplicate_count}</Tag>
+                                       )}
+                                       {step.output_data?.failures?.length > 0 && (
+                                         <div style={{ width: '100%', marginTop: 4 }}>
+                                           {step.output_data.failures.slice(0, 3).map((f, i) => (
+                                             <Text key={i} type="danger" style={{ fontSize: 11, display: 'block' }}>
+                                               {f}
+                                             </Text>
+                                           ))}
+                                         </div>
+                                       )}
+                                     </Space>
+                                   )}
                                  </div>
                                )}
 

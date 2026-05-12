@@ -193,6 +193,14 @@ async def node_simulate(
         "use_batch": use_batch,
     })
 
+    # Record a running trace before the long BRAIN call so frontend shows progress
+    await record_trace(
+        state, trace_service, node_name,
+        {"batch_size": len(expressions), "status": "running"},
+        {"success_count": 0, "simulated_count": 0, "results": []},
+        0, "RUNNING"
+    )
+
     try:
         if use_batch:
             results = await brain.simulate_batch(

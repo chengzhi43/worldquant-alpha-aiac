@@ -268,7 +268,20 @@ async def node_simulate(
             "success_count": success_count,
             "simulated_count": len(indices_to_simulate),
             "db_duplicates": db_duplicates,
-            "results": [{"id": r.get("alpha_id"), "err": r.get("error")} for r in results[:20]]
+            "results": [
+                {
+                    "id": r.get("alpha_id"),
+                    "expression": (expressions[i] if i < len(expressions) else "")[:80],
+                    "err": r.get("error") or (None if r.get("success") else "模拟失败(无错误详情)"),
+                    "success": r.get("success", False),
+                    "metrics": {
+                        "sharpe": r.get("metrics", {}).get("sharpe"),
+                        "fitness": r.get("metrics", {}).get("fitness"),
+                        "turnover": r.get("metrics", {}).get("turnover"),
+                    } if r.get("metrics") else None,
+                }
+                for i, r in enumerate(results[:20])
+            ]
         },
         duration_ms,
         "SUCCESS" if success_count > 0 else "PARTIAL_FAILURE"

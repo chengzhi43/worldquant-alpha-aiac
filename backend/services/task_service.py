@@ -11,7 +11,7 @@ Provides methods for:
 import logging
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func
 
@@ -93,8 +93,8 @@ class TaskDetail:
     config: Dict[str, Any]
     created_at: datetime
     updated_at: Optional[datetime]
-    trace_steps: List[TraceStepInfo]
-    alphas_count: int
+    trace_steps: List[TraceStepInfo] = field(default_factory=list)
+    alphas_count: int = 0
 
 
 @dataclass
@@ -220,7 +220,7 @@ class TaskService(BaseService):
         
         # Count alphas
         alphas_count = await self.alpha_repo.count_by({"task_id": task_id})
-        
+
         return TaskDetail(
             id=task.id,
             task_name=task.task_name,
@@ -237,7 +237,6 @@ class TaskService(BaseService):
             config=task.config or {},
             created_at=task.created_at,
             updated_at=task.updated_at,
-            trace_steps=[self._to_trace_info(s) for s in steps],
             alphas_count=alphas_count,
         )
     

@@ -173,8 +173,7 @@ export default function TaskDetail() {
   // Sort and group steps by iteration (consolidate all steps of same iteration)
   const groupedSteps = React.useMemo(() => {
     try {
-      const traceSteps = runTrace || task?.trace_steps
-      if (!traceSteps) return {}
+      if (!runTrace) return {}
 
       // Sort steps by created_at or id first
       const sortedSteps = [...traceSteps].sort((a, b) => {
@@ -221,7 +220,7 @@ export default function TaskDetail() {
       console.error('[TaskDetail] groupedSteps error:', e)
       return {}
     }
-  }, [runTrace, task?.trace_steps])
+  }, [runTrace])
 
   // Get group keys sorted by firstCreatedAt descending (latest first)
   const iterationKeys = React.useMemo(() => {
@@ -504,11 +503,11 @@ export default function TaskDetail() {
                     label: `#${r.id} ${r.status} ${r.started_at ? new Date(r.started_at).toLocaleString() : ''}`,
                   }))}
                 />
-                <Text type="secondary">共 {(runTrace || task.trace_steps)?.length || 0} 步 / {iterationKeys.length} 轮</Text>
+                <Text type="secondary">共 {runTrace?.length || 0} 步 / {iterationKeys.length} 轮</Text>
               </Space>
             )}
           >
-            {(runTrace || task.trace_steps) && (runTrace || task.trace_steps).length > 0 ? (
+            {runTrace && runTrace.length > 0 ? (
               <Collapse 
                 bordered={false} 
                 activeKey={activeIterations} 

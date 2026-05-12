@@ -25,7 +25,8 @@ celery_app.conf.update(
     timezone="Asia/Shanghai",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=3600,  # 1 hour max per task
+    task_time_limit=28800,  # 8 hours max per task (SIMULATE can take 30min+ per round × 10 rounds)
+    task_soft_time_limit=25200,  # Soft warning at 7 hours
     worker_prefetch_multiplier=1,  # Fair scheduling
 )
 

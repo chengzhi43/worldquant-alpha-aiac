@@ -67,7 +67,7 @@ export default function TaskDetail() {
   const { data: task, isLoading, error } = useQuery({
     queryKey: ['task', id],
     queryFn: () => api.getTask(id),
-    refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
+    refetchInterval: (query) => query.state.data?.status === 'RUNNING' ? 5000 : false,
   })
 
   const { data: runs } = useQuery({
